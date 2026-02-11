@@ -63,41 +63,101 @@ export abstract class TunDevice extends EventEmitter {
   }
 }
 
-// Linux TUN device implementation
+// Linux TUN device implementation using Python bridge via Unix socket
 class LinuxTunDevice extends TunDevice {
-  private readStream?: fs.ReadStream;
-  private writeStream?: fs.WriteStream;
+  private socket: any = null;
+  private socketPath: string = '/tmp/vpn-tun.sock';
+  private bridgeProcess: any = null;
+  private receiveBuffer: Buffer = Buffer.alloc(0);
 
   async create(): Promise<void> {
-    // On Linux, we need to use /dev/net/tun with ioctl
-    // For simplicity, we'll use the ip command to create a tun device
     try {
-      // Create TUN device using ip command
-      await this.exec(`ip tuntap add dev ${this.name} mode tun`);
+      // Create TUN device using ip command (will be used by Python bridge)
+      try {
+        await this.exec(`ip tuntap add dev ${this.name} mode tun`);
+      } catch (e) {
+        logger.warn(`TUN device ${this.name} may already exist`);
+      }
       await this.exec(`ip link set ${this.name} mtu ${this.mtu}`);
 
-      // Open the device
-      const devicePath = `/dev/net/tun`;
-      if (!fs.existsSync(devicePath)) {
-        throw new Error('TUN device not available. Is the tun module loaded?');
+      // Start Python TUN bridge
+      const bridgePath = '/app/tun-bridge.py';
+      if (!fs.existsSync(bridgePath)) {
+        throw new Error(`TUN bridge not found at ${bridgePath}`);
       }
 
+      this.bridgeProcess = spawn('python3', [bridgePath, this.name], {
+        stdio: ['ignore', 'inherit', 'inherit']
+      });
+
+      this.bridgeProcess.on('error', (err: Error) => {
+        logger.error('TUN bridge process error', err);
+      });
+
+      this.bridgeProcess.on('exit', (code: number) => {
+        logger.warn(`TUN bridge exited with code ${code}`);
+      });
+
+      // Wait for socket to be available
+      await new Promise(resolve => setTimeout(resolve, 1500));
+
+      // Connect to Unix socket
+      const net = require('net');
+      this.socket = net.createConnection(this.socketPath);
+
+      this.socket.on('data', (data: Buffer) => {
+        this.handleIncomingData(data);
+      });
+
+      this.socket.on('error', (err: Error) => {
+        logger.error('TUN socket error', err);
+      });
+
+      // Wait for connection
+      await new Promise<void>((resolve, reject) => {
+        this.socket.once('connect', () => {
+          logger.info('Connected to TUN bridge');
+          resolve();
+        });
+        this.socket.once('error', reject);
+        setTimeout(() => reject(new Error('Socket connection timeout')), 5000);
+      });
+
       this.running = true;
-      logger.info(`Linux TUN device ${this.name} created`);
+      logger.info(`Linux TUN device ${this.name} created with Python bridge`);
     } catch (error) {
       logger.error('Failed to create TUN device', error);
       throw error;
     }
   }
 
+  private handleIncomingData(data: Buffer): void {
+    this.receiveBuffer = Buffer.concat([this.receiveBuffer, data]);
+
+    while (this.receiveBuffer.length >= 4) {
+      const length = this.receiveBuffer.readUInt32BE(0);
+      if (this.receiveBuffer.length < 4 + length) {
+        break;
+      }
+
+      const packet = this.receiveBuffer.slice(4, 4 + length);
+      this.receiveBuffer = this.receiveBuffer.slice(4 + length);
+
+      this.emit('packet', packet);
+    }
+  }
+
   async destroy(): Promise<void> {
     this.running = false;
 
-    if (this.readStream) {
-      this.readStream.destroy();
+    if (this.socket) {
+      this.socket.destroy();
+      this.socket = null;
     }
-    if (this.writeStream) {
-      this.writeStream.destroy();
+
+    if (this.bridgeProcess) {
+      this.bridgeProcess.kill();
+      this.bridgeProcess = null;
     }
 
     try {
@@ -109,24 +169,47 @@ class LinuxTunDevice extends TunDevice {
   }
 
   async assignIP(ip: string, netmask: string): Promise<void> {
-    // Convert netmask to CIDR prefix
     const prefix = this.netmaskToCIDR(netmask);
 
-    await this.exec(`ip addr add ${ip}/${prefix} dev ${this.name}`);
+    try {
+      await this.exec(`ip addr add ${ip}/${prefix} dev ${this.name}`);
+    } catch (e) {
+      logger.warn('IP may already be assigned');
+    }
     await this.exec(`ip link set ${this.name} up`);
+
+    // Enable IP forwarding and set up NAT inside container
+    try {
+      await this.exec('echo 1 > /proc/sys/net/ipv4/ip_forward');
+      const subnet = ip.replace(/\.\d+$/, '.0') + '/24';
+      await this.exec(`iptables -t nat -C POSTROUTING -s ${subnet} -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s ${subnet} -o eth0 -j MASQUERADE`);
+      await this.exec(`iptables -C FORWARD -i ${this.name} -j ACCEPT 2>/dev/null || iptables -A FORWARD -i ${this.name} -j ACCEPT`);
+      await this.exec(`iptables -C FORWARD -o ${this.name} -j ACCEPT 2>/dev/null || iptables -A FORWARD -o ${this.name} -j ACCEPT`);
+      logger.info('NAT configured for VPN subnet');
+    } catch (e) {
+      logger.warn('NAT setup warning', e);
+    }
 
     logger.info(`Assigned IP ${ip}/${prefix} to ${this.name}`);
   }
 
   async read(): Promise<Buffer> {
-    // In production, this would read from the TUN device file descriptor
-    // Using a simplified approach here
     return Buffer.alloc(0);
   }
 
   async write(packet: Buffer): Promise<void> {
-    // In production, this would write to the TUN device file descriptor
-    logger.debug(`Writing ${packet.length} bytes to TUN`);
+    if (!this.socket || !this.running) {
+      return;
+    }
+
+    try {
+      const header = Buffer.alloc(4);
+      header.writeUInt32BE(packet.length, 0);
+      this.socket.write(Buffer.concat([header, packet]));
+      logger.debug(`Wrote ${packet.length} bytes to TUN via bridge`);
+    } catch (error) {
+      logger.error('Error writing to TUN', error);
+    }
   }
 
   private netmaskToCIDR(netmask: string): number {

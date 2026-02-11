@@ -30,13 +30,14 @@ LABEL version="1.0.0"
 
 WORKDIR /app
 
-# Install runtime dependencies
+# Install runtime dependencies including Python3 for TUN bridge
 RUN apk add --no-cache \
     openssl \
     iptables \
     iproute2 \
     bash \
     curl \
+    python3 \
     && rm -rf /var/cache/apk/*
 
 # Copy built application
@@ -44,9 +45,10 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 
-# Copy certificates and scripts
+# Copy certificates, scripts, and TUN bridge
 COPY certs ./certs
 COPY scripts ./scripts
+COPY tun-bridge.py ./
 COPY docker-entrypoint.sh /usr/local/bin/
 
 # Make scripts executable
