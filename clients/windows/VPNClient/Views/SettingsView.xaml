@@ -1,0 +1,193 @@
+<UserControl x:Class="VPNClient.Views.SettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             mc:Ignorable="d"
+             d:DesignWidth="400">
+
+    <Grid>
+        <StackPanel>
+            <!-- Header -->
+            <Grid Margin="0,0,0,24">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Text="Settings" FontSize="20" FontWeight="SemiBold"
+                           Foreground="{StaticResource TextPrimaryBrush}"
+                           VerticalAlignment="Center"/>
+                <Button Grid.Column="1" Style="{StaticResource SecondaryButtonStyle}"
+                        Padding="8,4" Click="CloseButton_Click">
+                    <TextBlock Text="X" FontSize="14" FontWeight="Bold"/>
+                </Button>
+            </Grid>
+
+            <!-- General Settings -->
+            <TextBlock Text="General" FontSize="14" FontWeight="SemiBold"
+                       Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+
+            <Border Background="#F9F9F9" CornerRadius="6" Padding="16" Margin="0,0,0,8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel>
+                        <TextBlock Text="Start with Windows" FontSize="14"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                        <TextBlock Text="Launch VPN client when Windows starts"
+                                   FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                    <CheckBox x:Name="StartWithWindowsCheckBox" Grid.Column="1"
+                              VerticalAlignment="Center"/>
+                </Grid>
+            </Border>
+
+            <Border Background="#F9F9F9" CornerRadius="6" Padding="16" Margin="0,0,0,8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel>
+                        <TextBlock Text="Auto-connect on startup" FontSize="14"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                        <TextBlock Text="Automatically connect to last server"
+                                   FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                    <CheckBox x:Name="AutoConnectCheckBox" Grid.Column="1"
+                              VerticalAlignment="Center"/>
+                </Grid>
+            </Border>
+
+            <Border Background="#F9F9F9" CornerRadius="6" Padding="16" Margin="0,0,0,24">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel>
+                        <TextBlock Text="Minimize to system tray" FontSize="14"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                        <TextBlock Text="Minimize to tray instead of taskbar"
+                                   FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                    <CheckBox x:Name="MinimizeToTrayCheckBox" Grid.Column="1"
+                              VerticalAlignment="Center"/>
+                </Grid>
+            </Border>
+
+            <!-- Connection Settings -->
+            <TextBlock Text="Connection" FontSize="14" FontWeight="SemiBold"
+                       Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+
+            <Border Background="#F9F9F9" CornerRadius="6" Padding="16" Margin="0,0,0,8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel>
+                        <TextBlock Text="Kill switch" FontSize="14"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                        <TextBlock Text="Block internet if VPN disconnects"
+                                   FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                    <CheckBox x:Name="KillSwitchCheckBox" Grid.Column="1"
+                              VerticalAlignment="Center"/>
+                </Grid>
+            </Border>
+
+            <Border Background="#F9F9F9" CornerRadius="6" Padding="16" Margin="0,0,0,8">
+                <StackPanel>
+                    <TextBlock Text="MTU Size" FontSize="14"
+                               Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,8"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="80"/>
+                        </Grid.ColumnDefinitions>
+                        <Slider x:Name="MtuSlider" Minimum="576" Maximum="1500"
+                                Value="1400" TickFrequency="100" IsSnapToTickEnabled="True"
+                                VerticalAlignment="Center"/>
+                        <TextBox x:Name="MtuTextBox" Grid.Column="1"
+                                 Style="{StaticResource ModernTextBoxStyle}"
+                                 Text="1400" TextAlignment="Center"
+                                 Margin="12,0,0,0" TextChanged="MtuTextBox_TextChanged"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <Border Background="#F9F9F9" CornerRadius="6" Padding="16" Margin="0,0,0,24">
+                <StackPanel>
+                    <TextBlock Text="Custom DNS (optional)" FontSize="14"
+                               Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,8"/>
+                    <TextBox x:Name="CustomDnsTextBox"
+                             Style="{StaticResource ModernTextBoxStyle}"
+                             Text="" ToolTip="e.g., 1.1.1.1, 8.8.8.8"/>
+                    <TextBlock Text="Comma-separated DNS servers. Leave empty to use server-provided DNS."
+                               FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"
+                               TextWrapping="Wrap" Margin="0,8,0,0"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Advanced Settings -->
+            <TextBlock Text="Advanced" FontSize="14" FontWeight="SemiBold"
+                       Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+
+            <Border Background="#F9F9F9" CornerRadius="6" Padding="16" Margin="0,0,0,8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel>
+                        <TextBlock Text="Enable logging" FontSize="14"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                        <TextBlock Text="Log connection events for troubleshooting"
+                                   FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                    <CheckBox x:Name="EnableLoggingCheckBox" Grid.Column="1"
+                              VerticalAlignment="Center" IsChecked="True"/>
+                </Grid>
+            </Border>
+
+            <Border Background="#F9F9F9" CornerRadius="6" Padding="16" Margin="0,0,0,24">
+                <StackPanel>
+                    <TextBlock Text="Connection timeout (seconds)" FontSize="14"
+                               Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,8"/>
+                    <TextBox x:Name="TimeoutTextBox"
+                             Style="{StaticResource ModernTextBoxStyle}"
+                             Text="30" Width="100" HorizontalAlignment="Left"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Action Buttons -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="1" Style="{StaticResource SecondaryButtonStyle}"
+                        Content="Reset to Defaults" Margin="0,0,12,0"
+                        Click="ResetButton_Click"/>
+                <Button Grid.Column="2" Style="{StaticResource ModernButtonStyle}"
+                        Content="Save Changes" Click="SaveButton_Click"/>
+            </Grid>
+        </StackPanel>
+    </Grid>
+</UserControl>

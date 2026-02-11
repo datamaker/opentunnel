@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+*.js.map
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Certificates (sensitive)
+server/certs/*.key
+server/certs/*.crt
+server/certs/*.pem
+
+# Logs
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# OS
+Thumbs.db
+
+# iOS/macOS
+*.xcworkspace
+*.xcuserdata
+DerivedData/
+Pods/
+
+# Android
+*.apk
+*.aab
+.gradle/
+local.properties
+clients/android/.idea/
+clients/android/app/build/
+clients/android/build/
+
+# Windows
+*.exe
+*.dll
+bin/
+obj/
+*.user
+*.suo
+
+# Test
+coverage/
+.nyc_output/

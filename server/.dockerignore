@@ -1,0 +1,47 @@
+# Dependencies (will be installed in container)
+node_modules/
+npm-debug.log
+
+# Development files
+.git
+.gitignore
+.env
+.env.*
+
+# Documentation
+README.md
+CHANGELOG.md
+docs/
+
+# Tests
+tests/
+__tests__/
+*.test.ts
+*.spec.ts
+coverage/
+.nyc_output/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Build artifacts (will be built in container)
+dist/
+
+# TypeScript source maps
+*.map
+
+# Certificates (will be generated in container)
+certs/*.key
+certs/*.crt
+certs/*.pem

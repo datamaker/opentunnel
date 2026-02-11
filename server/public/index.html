@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VPN Admin Panel</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#3b82f6',
+            dark: '#1e293b'
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    .modal { display: none; }
+    .modal.active { display: flex; }
+  </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+  <!-- Login Screen -->
+  <div id="loginScreen" class="min-h-screen flex items-center justify-center">
+    <div class="bg-white p-8 rounded-lg shadow-lg w-96">
+      <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">VPN Admin</h1>
+      <form id="loginForm">
+        <div class="mb-4">
+          <label class="block text-gray-700 text-sm font-bold mb-2">관리자 비밀번호</label>
+          <input type="password" id="adminPassword"
+                 class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                 placeholder="비밀번호 입력">
+        </div>
+        <button type="submit"
+                class="w-full bg-primary text-white py-2 rounded-lg hover:bg-blue-600 transition">
+          로그인
+        </button>
+        <p id="loginError" class="text-red-500 text-sm mt-2 hidden">비밀번호가 올바르지 않습니다</p>
+      </form>
+    </div>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="dashboard" class="hidden">
+    <!-- Header -->
+    <header class="bg-dark text-white py-4 px-6 flex justify-between items-center">
+      <h1 class="text-xl font-bold">VPN Server Admin</h1>
+      <button onclick="logout()" class="text-gray-300 hover:text-white">로그아웃</button>
+    </header>
+
+    <!-- Stats -->
+    <div class="p-6">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+        <div class="bg-white p-4 rounded-lg shadow">
+          <div class="text-gray-500 text-sm">전체 사용자</div>
+          <div id="statTotalUsers" class="text-2xl font-bold text-gray-800">-</div>
+        </div>
+        <div class="bg-white p-4 rounded-lg shadow">
+          <div class="text-gray-500 text-sm">활성 사용자</div>
+          <div id="statActiveUsers" class="text-2xl font-bold text-green-600">-</div>
+        </div>
+        <div class="bg-white p-4 rounded-lg shadow">
+          <div class="text-gray-500 text-sm">현재 연결</div>
+          <div id="statActiveSessions" class="text-2xl font-bold text-blue-600">-</div>
+        </div>
+        <div class="bg-white p-4 rounded-lg shadow">
+          <div class="text-gray-500 text-sm">24시간 연결</div>
+          <div id="stat24hConnections" class="text-2xl font-bold text-purple-600">-</div>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <div class="flex border-b mb-4">
+        <button onclick="showTab('users')" id="tabUsers"
+                class="px-4 py-2 border-b-2 border-primary text-primary font-medium">
+          사용자 관리
+        </button>
+        <button onclick="showTab('sessions')" id="tabSessions"
+                class="px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+          활성 세션
+        </button>
+        <button onclick="showTab('logs')" id="tabLogs"
+                class="px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+          연결 로그
+        </button>
+      </div>
+
+      <!-- Users Tab -->
+      <div id="panelUsers" class="bg-white rounded-lg shadow">
+        <div class="p-4 border-b flex justify-between items-center">
+          <h2 class="text-lg font-semibold">사용자 목록</h2>
+          <button onclick="showAddUserModal()"
+                  class="bg-primary text-white px-4 py-2 rounded-lg hover:bg-blue-600">
+            + 사용자 추가
+          </button>
+        </div>
+        <table class="w-full">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">사용자명</th>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">상태</th>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">최대 연결</th>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">생성일</th>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">작업</th>
+            </tr>
+          </thead>
+          <tbody id="usersTable" class="divide-y">
+            <!-- Users will be loaded here -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Sessions Tab -->
+      <div id="panelSessions" class="bg-white rounded-lg shadow hidden">
+        <div class="p-4 border-b">
+          <h2 class="text-lg font-semibold">활성 세션</h2>
+        </div>
+        <table class="w-full">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">사용자</th>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">할당 IP</th>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">플랫폼</th>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">연결 시간</th>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">작업</th>
+            </tr>
+          </thead>
+          <tbody id="sessionsTable" class="divide-y">
+            <!-- Sessions will be loaded here -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Logs Tab -->
+      <div id="panelLogs" class="bg-white rounded-lg shadow hidden">
+        <div class="p-4 border-b">
+          <h2 class="text-lg font-semibold">최근 연결 로그</h2>
+        </div>
+        <table class="w-full">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">시간</th>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">사용자</th>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">이벤트</th>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">클라이언트 IP</th>
+            </tr>
+          </thead>
+          <tbody id="logsTable" class="divide-y">
+            <!-- Logs will be loaded here -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add User Modal -->
+  <div id="addUserModal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center z-50">
+    <div class="bg-white rounded-lg w-96 p-6">
+      <h3 class="text-lg font-semibold mb-4">새 사용자 추가</h3>
+      <form id="addUserForm">
+        <div class="mb-4">
+          <label class="block text-gray-700 text-sm font-bold mb-2">사용자명</label>
+          <input type="text" id="newUsername" required
+                 class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary">
+        </div>
+        <div class="mb-4">
+          <label class="block text-gray-700 text-sm font-bold mb-2">비밀번호</label>
+          <input type="password" id="newPassword" required
+                 class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary">
+        </div>
+        <div class="mb-4">
+          <label class="block text-gray-700 text-sm font-bold mb-2">최대 연결 수</label>
+          <input type="number" id="newMaxConnections" value="3" min="1" max="10"
+                 class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary">
+        </div>
+        <div class="flex gap-2">
+          <button type="button" onclick="hideAddUserModal()"
+                  class="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg hover:bg-gray-300">
+            취소
+          </button>
+          <button type="submit"
+                  class="flex-1 bg-primary text-white py-2 rounded-lg hover:bg-blue-600">
+            추가
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Edit User Modal -->
+  <div id="editUserModal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center z-50">
+    <div class="bg-white rounded-lg w-96 p-6">
+      <h3 class="text-lg font-semibold mb-4">사용자 수정</h3>
+      <form id="editUserForm">
+        <input type="hidden" id="editUserId">
+        <div class="mb-4">
+          <label class="block text-gray-700 text-sm font-bold mb-2">사용자명</label>
+          <input type="text" id="editUsername"
+                 class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary">
+        </div>
+        <div class="mb-4">
+          <label class="block text-gray-700 text-sm font-bold mb-2">새 비밀번호 (변경 시)</label>
+          <input type="password" id="editPassword"
+                 class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+                 placeholder="비워두면 유지">
+        </div>
+        <div class="mb-4">
+          <label class="block text-gray-700 text-sm font-bold mb-2">최대 연결 수</label>
+          <input type="number" id="editMaxConnections" min="1" max="10"
+                 class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary">
+        </div>
+        <div class="mb-4">
+          <label class="flex items-center">
+            <input type="checkbox" id="editIsActive" class="mr-2">
+            <span class="text-gray-700 text-sm">계정 활성화</span>
+          </label>
+        </div>
+        <div class="flex gap-2">
+          <button type="button" onclick="hideEditUserModal()"
+                  class="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg hover:bg-gray-300">
+            취소
+          </button>
+          <button type="submit"
+                  class="flex-1 bg-primary text-white py-2 rounded-lg hover:bg-blue-600">
+            저장
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    let token = localStorage.getItem('vpn_admin_token');
+
+    // API helper
+    async function api(endpoint, options = {}) {
+      const res = await fetch(endpoint, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          ...options.headers
+        }
+      });
+
+      if (res.status === 401) {
+        logout();
+        throw new Error('Unauthorized');
+      }
+
+      return res.json();
+    }
+
+    // Auth
+    document.getElementById('loginForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const password = document.getElementById('adminPassword').value;
+
+      try {
+        const data = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password })
+        }).then(r => r.json());
+
+        if (data.token) {
+          token = data.token;
+          localStorage.setItem('vpn_admin_token', token);
+          showDashboard();
+        } else {
+          document.getElementById('loginError').classList.remove('hidden');
+        }
+      } catch (err) {
+        document.getElementById('loginError').classList.remove('hidden');
+      }
+    };
+
+    function logout() {
+      localStorage.removeItem('vpn_admin_token');
+      token = null;
+      document.getElementById('loginScreen').classList.remove('hidden');
+      document.getElementById('dashboard').classList.add('hidden');
+    }
+
+    function showDashboard() {
+      document.getElementById('loginScreen').classList.add('hidden');
+      document.getElementById('dashboard').classList.remove('hidden');
+      loadStats();
+      loadUsers();
+    }
+
+    // Stats
+    async function loadStats() {
+      try {
+        const stats = await api('/api/stats');
+        document.getElementById('statTotalUsers').textContent = stats.users.total;
+        document.getElementById('statActiveUsers').textContent = stats.users.active;
+        document.getElementById('statActiveSessions').textContent = stats.activeSessions;
+        document.getElementById('stat24hConnections').textContent = stats.last24h.connect || 0;
+      } catch (err) {
+        console.error('Failed to load stats', err);
+      }
+    }
+
+    // Tabs
+    function showTab(tab) {
+      const tabs = ['users', 'sessions', 'logs'];
+      tabs.forEach(t => {
+        document.getElementById(`panel${t.charAt(0).toUpperCase() + t.slice(1)}`).classList.toggle('hidden', t !== tab);
+        document.getElementById(`tab${t.charAt(0).toUpperCase() + t.slice(1)}`).classList.toggle('border-primary', t === tab);
+        document.getElementById(`tab${t.charAt(0).toUpperCase() + t.slice(1)}`).classList.toggle('text-primary', t === tab);
+        document.getElementById(`tab${t.charAt(0).toUpperCase() + t.slice(1)}`).classList.toggle('border-transparent', t !== tab);
+        document.getElementById(`tab${t.charAt(0).toUpperCase() + t.slice(1)}`).classList.toggle('text-gray-500', t !== tab);
+      });
+
+      if (tab === 'users') loadUsers();
+      if (tab === 'sessions') loadSessions();
+      if (tab === 'logs') loadLogs();
+    }
+
+    // Users
+    async function loadUsers() {
+      try {
+        const users = await api('/api/users');
+        const tbody = document.getElementById('usersTable');
+        tbody.innerHTML = users.map(u => `
+          <tr>
+            <td class="px-4 py-3 font-medium">${escapeHtml(u.username)}</td>
+            <td class="px-4 py-3">
+              <span class="px-2 py-1 text-xs rounded-full ${u.is_active ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">
+                ${u.is_active ? '활성' : '비활성'}
+              </span>
+            </td>
+            <td class="px-4 py-3">${u.max_connections}</td>
+            <td class="px-4 py-3 text-gray-500">${new Date(u.created_at).toLocaleDateString('ko-KR')}</td>
+            <td class="px-4 py-3">
+              <button onclick="showEditUserModal('${u.id}', '${escapeHtml(u.username)}', ${u.is_active}, ${u.max_connections})"
+                      class="text-blue-600 hover:text-blue-800 mr-2">수정</button>
+              <button onclick="deleteUser('${u.id}', '${escapeHtml(u.username)}')"
+                      class="text-red-600 hover:text-red-800">삭제</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        console.error('Failed to load users', err);
+      }
+    }
+
+    // Sessions
+    async function loadSessions() {
+      try {
+        const sessions = await api('/api/sessions');
+        const tbody = document.getElementById('sessionsTable');
+
+        if (sessions.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-8 text-center text-gray-500">활성 세션이 없습니다</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = sessions.map(s => `
+          <tr>
+            <td class="px-4 py-3 font-medium">${escapeHtml(s.username)}</td>
+            <td class="px-4 py-3 font-mono text-sm">${s.assigned_ip}</td>
+            <td class="px-4 py-3">${s.client_platform || '-'}</td>
+            <td class="px-4 py-3 text-gray-500">${new Date(s.connected_at).toLocaleString('ko-KR')}</td>
+            <td class="px-4 py-3">
+              <button onclick="terminateSession('${s.id}')"
+                      class="text-red-600 hover:text-red-800">연결 끊기</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        console.error('Failed to load sessions', err);
+      }
+    }
+
+    // Logs
+    async function loadLogs() {
+      try {
+        const logs = await api('/api/logs?limit=50');
+        const tbody = document.getElementById('logsTable');
+
+        if (logs.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" class="px-4 py-8 text-center text-gray-500">로그가 없습니다</td></tr>';
+          return;
+        }
+
+        const eventLabels = {
+          'connect': '연결',
+          'disconnect': '연결 해제',
+          'auth_success': '인증 성공',
+          'auth_failed': '인증 실패'
+        };
+
+        tbody.innerHTML = logs.map(l => `
+          <tr>
+            <td class="px-4 py-3 text-gray-500">${new Date(l.created_at).toLocaleString('ko-KR')}</td>
+            <td class="px-4 py-3 font-medium">${escapeHtml(l.username || '-')}</td>
+            <td class="px-4 py-3">
+              <span class="px-2 py-1 text-xs rounded-full ${
+                l.event_type === 'connect' ? 'bg-green-100 text-green-700' :
+                l.event_type === 'disconnect' ? 'bg-gray-100 text-gray-700' :
+                l.event_type === 'auth_success' ? 'bg-blue-100 text-blue-700' :
+                'bg-red-100 text-red-700'
+              }">
+                ${eventLabels[l.event_type] || l.event_type}
+              </span>
+            </td>
+            <td class="px-4 py-3 font-mono text-sm">${l.client_ip || '-'}</td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        console.error('Failed to load logs', err);
+      }
+    }
+
+    // Modals
+    function showAddUserModal() {
+      document.getElementById('addUserModal').classList.add('active');
+      document.getElementById('newUsername').value = '';
+      document.getElementById('newPassword').value = '';
+      document.getElementById('newMaxConnections').value = '3';
+    }
+
+    function hideAddUserModal() {
+      document.getElementById('addUserModal').classList.remove('active');
+    }
+
+    function showEditUserModal(id, username, isActive, maxConnections) {
+      document.getElementById('editUserModal').classList.add('active');
+      document.getElementById('editUserId').value = id;
+      document.getElementById('editUsername').value = username;
+      document.getElementById('editPassword').value = '';
+      document.getElementById('editIsActive').checked = isActive;
+      document.getElementById('editMaxConnections').value = maxConnections;
+    }
+
+    function hideEditUserModal() {
+      document.getElementById('editUserModal').classList.remove('active');
+    }
+
+    // User Actions
+    document.getElementById('addUserForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('newUsername').value;
+      const password = document.getElementById('newPassword').value;
+      const maxConnections = parseInt(document.getElementById('newMaxConnections').value);
+
+      try {
+        await api('/api/users', {
+          method: 'POST',
+          body: JSON.stringify({ username, password, maxConnections })
+        });
+        hideAddUserModal();
+        loadUsers();
+        loadStats();
+      } catch (err) {
+        alert('사용자 추가 실패');
+      }
+    };
+
+    document.getElementById('editUserForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const id = document.getElementById('editUserId').value;
+      const username = document.getElementById('editUsername').value;
+      const password = document.getElementById('editPassword').value;
+      const isActive = document.getElementById('editIsActive').checked;
+      const maxConnections = parseInt(document.getElementById('editMaxConnections').value);
+
+      const body = { username, isActive, maxConnections };
+      if (password) body.password = password;
+
+      try {
+        await api(`/api/users/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify(body)
+        });
+        hideEditUserModal();
+        loadUsers();
+      } catch (err) {
+        alert('사용자 수정 실패');
+      }
+    };
+
+    async function deleteUser(id, username) {
+      if (!confirm(`정말 "${username}" 사용자를 삭제하시겠습니까?`)) return;
+
+      try {
+        await api(`/api/users/${id}`, { method: 'DELETE' });
+        loadUsers();
+        loadStats();
+      } catch (err) {
+        alert('사용자 삭제 실패');
+      }
+    }
+
+    async function terminateSession(id) {
+      if (!confirm('이 세션을 종료하시겠습니까?')) return;
+
+      try {
+        await api(`/api/sessions/${id}`, { method: 'DELETE' });
+        loadSessions();
+        loadStats();
+      } catch (err) {
+        alert('세션 종료 실패');
+      }
+    }
+
+    // Utility
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    // Init
+    if (token) {
+      showDashboard();
+    }
+  </script>
+</body>
+</html>

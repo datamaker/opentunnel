@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VPN Client</string>
+    <string name="vpn_notification_channel">VPN Service</string>
+    <string name="vpn_notification_title">VPN Connected</string>
+    <string name="vpn_notification_text">Your connection is secure</string>
+</resources>

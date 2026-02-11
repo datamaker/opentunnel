@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  # VPN Server
+  vpn-server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    image: datamaker/opentunnel:latest
+    container_name: opentunnel-vpn
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - NODE_ENV=production
+      - PORT=1194
+      - ADMIN_PORT=8080
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=vpn
+      - DB_USER=vpn
+      - DB_PASSWORD=${DB_PASSWORD:-vpnpassword}
+      - VPN_SUBNET=10.8.0.0
+      - DNS_SERVERS=8.8.8.8,8.8.4.4
+      - JWT_SECRET=${JWT_SECRET:-change-this-in-production}
+    ports:
+      - "1194:1194"   # VPN
+      - "8080:8080"   # Admin Panel
+    volumes:
+      - vpn-certs:/app/certs
+      - vpn-logs:/app/logs
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      - net.ipv4.ip_forward=1
+    networks:
+      - vpn-network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: opentunnel-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=vpn
+      - POSTGRES_USER=vpn
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-vpnpassword}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./server/database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vpn -d vpn"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vpn-network
+    # Uncomment to expose PostgreSQL externally
+    # ports:
+    #   - "5432:5432"
+
+volumes:
+  postgres-data:
+    driver: local
+  vpn-certs:
+    driver: local
+  vpn-logs:
+    driver: local
+
+networks:
+  vpn-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
