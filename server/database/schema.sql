@@ -69,8 +69,8 @@ CREATE TRIGGER update_users_updated_at
 -- Insert default admin user (password: admin123)
 -- In production, change this password immediately!
 INSERT INTO users (username, password_hash, email, max_connections)
-VALUES ('admin', '$2b$10$rQZ5xzPvPvPvPvPvPvPvPuSomeHashedPasswordHere', 'admin@example.com', 5);
+VALUES ('admin', '$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'admin@example.com', 5);
 
 -- Sample user for testing (password: test123)
 INSERT INTO users (username, password_hash, email)
-VALUES ('testuser', '$2b$10$rQZ5xzPvPvPvPvPvPvPvPuSomeHashedPasswordHere', 'test@example.com');
+VALUES ('testuser', '$2b$10$K.0HwpsoPDGaB/atFBmmXOGTw4ceeg33.WrxJx/FeC9.gOMzlSzPa', 'test@example.com');
