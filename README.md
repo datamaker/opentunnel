@@ -1,18 +1,18 @@
 # OpenTunnel VPN
 
-A modern, open-source VPN solution built from scratch. Inspired by OpenVPN but implemented with modern technologies.
+A lightweight, open-source VPN solution built from scratch. OpenTunnel provides secure encrypted tunneling with native clients for all major platforms.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Server](https://img.shields.io/badge/server-Node.js-green.svg)
+![Docker](https://img.shields.io/badge/docker-datamaker%2Fopentunnel-blue.svg)
 ![Clients](https://img.shields.io/badge/clients-iOS%20%7C%20Android%20%7C%20macOS%20%7C%20Windows-orange.svg)
 
 ## Features
 
-- **TLS 1.3 Encryption** - Secure tunnel using modern TLS
-- **Cross-Platform Clients** - Native apps for iOS, Android, macOS, and Windows
-- **Simple Authentication** - Username/password with PostgreSQL backend
-- **Easy Deployment** - Docker support for quick server setup
-- **Admin Panel** - Web-based management interface
+- **Full Tunnel VPN**: Route all internet traffic through the VPN server
+- **TLS 1.3 Encryption**: Secure communication using modern cryptography
+- **Multi-Platform Clients**: Native apps for macOS, iOS, Android, and Windows
+- **Docker Deployment**: One-command installation using Docker
+- **PostgreSQL Backend**: Reliable user authentication and session management
 
 ## Architecture
 
@@ -30,10 +30,11 @@ A modern, open-source VPN solution built from scratch. Inspired by OpenVPN but i
 └───────────────────────────┼─────────────────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────────────────┐
-│                    Node.js VPN Server                           │
+│                    VPN Server (Docker)                          │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
-│  │ TLS Server  │  │Auth Service │  │Packet Router│             │
-│  └─────────────┘  └──────┬──────┘  └─────────────┘             │
+│  │ TLS Server  │  │ TUN Bridge  │  │   NAT/FW    │             │
+│  │  (Node.js)  │  │  (Python)   │  │ (iptables)  │             │
+│  └─────────────┘  └─────────────┘  └─────────────┘             │
 │                          │                                      │
 │                   ┌──────▼──────┐                               │
 │                   │ PostgreSQL  │                               │
@@ -43,117 +44,315 @@ A modern, open-source VPN solution built from scratch. Inspired by OpenVPN but i
 
 ## Quick Start
 
-### One-Line Install
+### One-Line Installation (Recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/datamaker/opentunnel/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/datamaker/opentunnel/main/install.sh | sudo bash
 ```
 
-### Server (Docker)
+This will:
+- Pull the Docker image from Docker Hub
+- Create a docker-compose.yml configuration
+- Start the VPN server and PostgreSQL database
+- Enable IP forwarding on the host
+
+### Manual Docker Installation
 
 ```bash
-# Pull and run
+# Create network
+docker network create vpn-network
+
+# Start PostgreSQL
 docker run -d \
-  --name opentunnel \
+  --name opentunnel-db \
+  --network vpn-network \
+  -e POSTGRES_USER=vpn \
+  -e POSTGRES_PASSWORD=your-secure-password \
+  -e POSTGRES_DB=vpn \
+  postgres:15-alpine
+
+# Start VPN Server
+docker run -d \
+  --name opentunnel-vpn \
+  --network vpn-network \
   --cap-add=NET_ADMIN \
+  --device=/dev/net/tun \
   -p 1194:1194 \
-  -p 8080:8080 \
-  -e DB_HOST=your-db-host \
-  -e DB_PASSWORD=your-password \
+  -e DB_HOST=opentunnel-db \
+  -e DB_PASSWORD=your-secure-password \
   datamaker/opentunnel:latest
 
-# Or use docker-compose
-docker-compose up -d
+# Enable IP forwarding on host
+sudo sysctl -w net.ipv4.ip_forward=1
 ```
 
-### Server (Manual)
+### Verify Installation
 
 ```bash
-cd server
-npm install
-npm run build
+# Check containers are running
+docker ps
 
-# Setup IP forwarding and NAT
-sudo ./scripts/setup-server.sh
+# View server logs
+docker logs -f opentunnel-vpn
 
-# Start server
-sudo NODE_ENV=production npm start
+# Test TLS connection
+openssl s_client -connect localhost:1194 -tls1_3
 ```
 
-### Clients
+## Default Credentials
 
-| Platform | Installation |
-|----------|--------------|
-| macOS | Build from source (Xcode) |
-| iOS | Build from source (Xcode) |
-| Android | Build from source (Android Studio) |
-| Windows | Build from source (Visual Studio) |
+| Username | Password |
+|----------|----------|
+| testuser | test123 |
 
-## Protocol
+> **Warning**: Change the default password immediately in production!
 
-Custom binary protocol over TLS:
+## Client Setup
 
-| Message Type | Code | Description |
-|--------------|------|-------------|
-| AUTH_REQUEST | 0x01 | Client authentication |
-| AUTH_RESPONSE | 0x02 | Server auth response |
-| CONFIG_PUSH | 0x03 | VPN configuration |
-| KEEPALIVE | 0x04 | Connection keepalive |
-| KEEPALIVE_ACK | 0x05 | Keepalive response |
-| DISCONNECT | 0x06 | Graceful disconnect |
-| DATA_PACKET | 0x10 | Tunneled IP packet |
+### macOS Client
 
-Message format: `[type:1][length:4][payload:N]`
+1. Open `clients/macos/VPNClient.xcodeproj` in Xcode
+2. Update server address in `ContentView.swift`:
+   ```swift
+   @State private var serverAddress = "your-server-ip"
+   ```
+3. Build and run (⌘+R)
+4. Enter credentials and click "Connect"
 
-## Configuration
+### iOS Client
 
-### Server Environment Variables
+1. Open `clients/ios/OpenTunnelVPN.xcodeproj` in Xcode
+2. Select your development team for code signing
+3. Update server address in the app
+4. Deploy to a real device (VPN apps require physical device)
+5. Go to Settings → General → VPN to enable the profile
+
+### Android Client
+
+1. Open `clients/android/` in Android Studio
+2. Update server address in `app/src/main/java/.../VpnConfig.kt`
+3. Build APK: Build → Build Bundle(s) / APK(s) → Build APK(s)
+4. Install and grant VPN permissions when prompted
+
+### Windows Client
+
+1. Open `clients/windows/OpenTunnelVPN.sln` in Visual Studio
+2. Build solution (Ctrl+Shift+B)
+3. Run as Administrator (required for TAP adapter)
+4. Enter server address and credentials
+
+## Server Configuration
+
+### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | 1194 | VPN server port |
-| `ADMIN_PORT` | 8080 | Admin panel port |
+| `VPN_PORT` | 1194 | VPN server port |
+| `VPN_SUBNET` | 10.8.0.0 | VPN client subnet |
+| `VPN_NETMASK` | 255.255.255.0 | Subnet mask |
+| `DNS_SERVERS` | 8.8.8.8,8.8.4.4 | DNS servers for clients |
 | `DB_HOST` | localhost | PostgreSQL host |
 | `DB_PORT` | 5432 | PostgreSQL port |
 | `DB_NAME` | vpn | Database name |
 | `DB_USER` | vpn | Database user |
-| `DB_PASSWORD` | - | Database password |
-| `VPN_SUBNET` | 10.8.0.0 | VPN IP subnet |
-| `DNS_SERVERS` | 8.8.8.8,8.8.4.4 | DNS servers |
+| `DB_PASSWORD` | required | Database password |
+| `JWT_SECRET` | auto-generated | JWT signing secret |
 
-## Project Structure
+### Adding Users
+
+Connect to the database and insert users:
+
+```sql
+-- Connect to database
+docker exec -it opentunnel-db psql -U vpn
+
+-- Generate bcrypt hash for password (use bcrypt online tool or node)
+-- Example: password "mypassword" = "$2b$10$..."
+
+INSERT INTO users (username, password_hash, is_active, max_connections)
+VALUES ('newuser', '$2b$10$your-bcrypt-hash', true, 3);
+```
+
+## Protocol Specification
+
+### Message Format
+
+```
+┌─────────┬──────────────┬─────────────────┐
+│  Type   │    Length    │     Payload     │
+│ 1 byte  │   4 bytes    │    N bytes      │
+│         │  (big-endian)│                 │
+└─────────┴──────────────┴─────────────────┘
+```
+
+### Message Types
+
+| Type | Code | Description |
+|------|------|-------------|
+| AUTH_REQUEST | 0x01 | Client sends username/password |
+| AUTH_RESPONSE | 0x02 | Server responds with success/failure |
+| CONFIG_PUSH | 0x03 | Server sends VPN config (IP, DNS, etc.) |
+| KEEPALIVE | 0x04 | Keepalive ping |
+| KEEPALIVE_ACK | 0x05 | Keepalive acknowledgment |
+| DISCONNECT | 0x06 | Graceful disconnect |
+| DATA_PACKET | 0x10 | Encapsulated IP packet |
+
+### Authentication Flow
+
+```
+Client                              Server
+   │                                   │
+   │──── AUTH_REQUEST ────────────────>│
+   │     {username, password}          │
+   │                                   │
+   │<─── AUTH_RESPONSE ────────────────│
+   │     {success, sessionToken}       │
+   │                                   │
+   │<─── CONFIG_PUSH ──────────────────│
+   │     {assignedIP, gateway, dns}    │
+   │                                   │
+   │──── DATA_PACKET ─────────────────>│
+   │     [IP packets]                  │
+   │<─── DATA_PACKET ──────────────────│
+   │                                   │
+```
+
+## Troubleshooting
+
+### Connection Refused
+```bash
+# Check if port is open
+sudo ufw allow 1194/tcp
+# or
+sudo iptables -A INPUT -p tcp --dport 1194 -j ACCEPT
+
+# Verify Docker is running
+docker ps | grep opentunnel
+```
+
+### No Internet Through VPN
+```bash
+# Enable IP forwarding on host
+sudo sysctl -w net.ipv4.ip_forward=1
+
+# Make persistent
+echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf
+
+# Check NAT rules in container
+docker exec opentunnel-vpn iptables -t nat -L POSTROUTING -n -v
+```
+
+### Authentication Failed
+```bash
+# Check server logs
+docker logs opentunnel-vpn | grep -i auth
+
+# Verify user exists in database
+docker exec opentunnel-db psql -U vpn -c "SELECT username FROM users;"
+
+# Reset user password
+docker exec opentunnel-db psql -U vpn -c \
+  "UPDATE users SET password_hash='new-bcrypt-hash' WHERE username='testuser';"
+```
+
+### TUN Device Error
+```bash
+# Ensure TUN module is loaded
+sudo modprobe tun
+ls -la /dev/net/tun
+
+# Verify container has NET_ADMIN capability
+docker inspect opentunnel-vpn | grep -A5 CapAdd
+```
+
+## Development
+
+### Building from Source
+
+```bash
+# Clone repository
+git clone https://github.com/datamaker/opentunnel.git
+cd opentunnel/server
+
+# Install dependencies
+npm install
+
+# Build TypeScript
+npm run build
+
+# Run in development
+npm run dev
+```
+
+### Building Docker Image
+
+```bash
+cd server
+docker build -t opentunnel:dev .
+
+# Test locally
+docker run --rm -it \
+  --cap-add=NET_ADMIN \
+  --device=/dev/net/tun \
+  -p 1194:1194 \
+  opentunnel:dev
+```
+
+### Project Structure
 
 ```
 opentunnel/
 ├── server/                 # Node.js VPN server
 │   ├── src/
+│   │   ├── index.ts       # Entry point
+│   │   ├── config/        # Configuration
+│   │   ├── tun/           # TUN device management
+│   │   ├── crypto/        # TLS server
+│   │   ├── protocol/      # VPN protocol
+│   │   ├── routing/       # Packet routing & NAT
+│   │   ├── session/       # Session management
+│   │   ├── auth/          # Authentication
+│   │   └── db/            # Database
+│   ├── tun-bridge.py      # Python TUN bridge
 │   ├── Dockerfile
-│   └── README.md
+│   └── package.json
+│
 ├── clients/
 │   ├── ios/               # iOS client (Swift)
 │   ├── android/           # Android client (Kotlin)
 │   ├── macos/             # macOS client (Swift)
 │   └── windows/           # Windows client (C#)
-├── docs/                  # Documentation
-└── docker-compose.yml
+│
+├── install.sh             # One-line installer
+├── docker-compose.yml     # Docker Compose config
+└── README.md
 ```
 
-## Security
+## Security Considerations
 
-- TLS 1.3 for all communications
-- Passwords hashed with bcrypt
-- Session tokens with expiration
-- IP-based rate limiting
-
-## Contributing
-
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
+- **Change default credentials** immediately after installation
+- Use **strong passwords** (16+ characters recommended)
+- Keep Docker and host system **updated**
+- Use a **firewall** to restrict access to management ports
+- **Monitor logs** for suspicious activity
+- Consider using **fail2ban** for brute-force protection
 
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
 
+## Contributing
+
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
 ## Acknowledgments
 
-- Inspired by OpenVPN
-- Built with Node.js, Swift, Kotlin, and C#
+- Inspired by OpenVPN architecture
+- Built with Node.js, Python, Swift, Kotlin, and C#
+- Uses PostgreSQL for reliable data storage

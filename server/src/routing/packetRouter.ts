@@ -81,8 +81,6 @@ export class PacketRouter extends EventEmitter {
     try {
       // Write packet to TUN device (will be routed by kernel)
       await this.tunDevice.write(packet);
-
-      logger.debug(`Routed packet from ${sourceIP} (${packet.length} bytes)`);
     } catch (error) {
       logger.error('Error routing packet from client', error);
     }

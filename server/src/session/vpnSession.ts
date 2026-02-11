@@ -190,9 +190,7 @@ export class VpnSession extends EventEmitter {
   }
 
   private handlePacket(packet: Buffer): void {
-    if (this.state !== SessionState.ACTIVE) {
-      return;
-    }
+    if (this.state !== SessionState.ACTIVE) return;
 
     // Emit packet for routing
     this.emit('packet', this.assignedIP, packet);

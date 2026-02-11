@@ -66,15 +66,10 @@ export class MessageHandler extends EventEmitter {
 
   private processMessage(message: VpnMessage): void {
     try {
-      // Debug: log raw message
-      logger.info(`Raw message type: ${message.type}, length: ${message.length}`);
-      logger.info(`Raw payload: ${message.payload.toString('utf-8')}`);
-
       const payload = ProtocolSerializer.parsePayload(message);
 
       switch (message.type) {
         case MessageType.AUTH_REQUEST:
-          logger.info(`Parsed auth request: ${JSON.stringify(payload)}`);
           this.emit('auth', payload as AuthRequest);
           break;
 
