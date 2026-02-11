@@ -43,6 +43,12 @@ A modern, open-source VPN solution built from scratch. Inspired by OpenVPN but i
 
 ## Quick Start
 
+### One-Line Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/datamaker/opentunnel/main/install.sh | bash
+```
+
 ### Server (Docker)
 
 ```bash
