@@ -1,21 +1,22 @@
 #!/bin/bash
-set -e
 
 echo "=== OpenTunnel VPN Server ==="
 echo "Starting initialization..."
 
-# Enable IP forwarding
+# Enable IP forwarding (may fail in container if read-only, host should have it enabled)
 echo "Enabling IP forwarding..."
-echo 1 > /proc/sys/net/ipv4/ip_forward
-
-# Setup NAT if not already configured
-if ! iptables -t nat -C POSTROUTING -s ${VPN_SUBNET}/24 -j MASQUERADE 2>/dev/null; then
-    echo "Configuring NAT rules..."
-    iptables -t nat -A POSTROUTING -s ${VPN_SUBNET}/24 -j MASQUERADE
-    iptables -A FORWARD -s ${VPN_SUBNET}/24 -j ACCEPT
-    iptables -A FORWARD -d ${VPN_SUBNET}/24 -j ACCEPT
-    iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+if echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null; then
+    echo "IP forwarding enabled in container"
+else
+    echo "Note: Enable IP forwarding on host with: sudo sysctl -w net.ipv4.ip_forward=1"
 fi
+
+# Setup NAT if not already configured (may fail without NET_ADMIN)
+echo "Configuring NAT rules..."
+iptables -t nat -A POSTROUTING -s ${VPN_SUBNET:-10.8.0.0}/24 -j MASQUERADE 2>/dev/null || echo "Note: NAT rules should be configured on host"
+iptables -A FORWARD -s ${VPN_SUBNET:-10.8.0.0}/24 -j ACCEPT 2>/dev/null || true
+iptables -A FORWARD -d ${VPN_SUBNET:-10.8.0.0}/24 -j ACCEPT 2>/dev/null || true
+iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
 
 # Create TUN device if it doesn't exist
 if [ ! -c /dev/net/tun ]; then
