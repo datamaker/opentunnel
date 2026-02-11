@@ -178,10 +178,16 @@ class LinuxTunDevice extends TunDevice {
     }
     await this.exec(`ip link set ${this.name} up`);
 
-    // Enable IP forwarding and set up NAT inside container
+    // Enable IP forwarding (may fail in container, that's OK - host should have it enabled)
     try {
       await this.exec('echo 1 > /proc/sys/net/ipv4/ip_forward');
-      const subnet = ip.replace(/\.\d+$/, '.0') + '/24';
+    } catch (e) {
+      logger.info('IP forwarding should be enabled on host: sysctl -w net.ipv4.ip_forward=1');
+    }
+
+    // Set up NAT rules
+    const subnet = ip.replace(/\.\d+$/, '.0') + '/24';
+    try {
       await this.exec(`iptables -t nat -C POSTROUTING -s ${subnet} -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s ${subnet} -o eth0 -j MASQUERADE`);
       await this.exec(`iptables -C FORWARD -i ${this.name} -j ACCEPT 2>/dev/null || iptables -A FORWARD -i ${this.name} -j ACCEPT`);
       await this.exec(`iptables -C FORWARD -o ${this.name} -j ACCEPT 2>/dev/null || iptables -A FORWARD -o ${this.name} -j ACCEPT`);

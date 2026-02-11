@@ -146,26 +146,9 @@ export class PacketRouter extends EventEmitter {
   }
 
   private async setupLinuxNAT(): Promise<void> {
-    const subnet = `${config.vpn.subnet}/24`;
-
-    // Enable IP forwarding
-    execSync('echo 1 > /proc/sys/net/ipv4/ip_forward');
-
-    // Get default interface
-    const defaultIface = this.getDefaultInterface();
-
-    // Add MASQUERADE rule
-    execSync(
-      `iptables -t nat -A POSTROUTING -s ${subnet} -o ${defaultIface} -j MASQUERADE`
-    );
-
-    // Allow forwarding
-    execSync(`iptables -A FORWARD -i ${this.tunDevice.getName()} -j ACCEPT`);
-    execSync(
-      `iptables -A FORWARD -o ${this.tunDevice.getName()} -m state --state RELATED,ESTABLISHED -j ACCEPT`
-    );
-
-    logger.info(`Linux NAT configured for ${subnet} via ${defaultIface}`);
+    // NAT is already configured in tunDevice.assignIP()
+    // Just log that we're using the existing configuration
+    logger.info('NAT configured by TUN device');
   }
 
   private async setupMacOSNAT(): Promise<void> {
