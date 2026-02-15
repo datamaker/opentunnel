@@ -13,7 +13,7 @@ fi
 
 # Setup NAT if not already configured (may fail without NET_ADMIN)
 echo "Configuring NAT rules..."
-iptables -t nat -A POSTROUTING -s ${VPN_SUBNET:-10.8.0.0}/24 -j MASQUERADE 2>/dev/null || echo "Note: NAT rules should be configured on host"
+iptables -t nat -A POSTROUTING -s ${VPN_SUBNET:-10.8.0.0}/24 -o eth0 -j MASQUERADE 2>/dev/null || echo "Note: NAT rules should be configured on host"
 iptables -A FORWARD -s ${VPN_SUBNET:-10.8.0.0}/24 -j ACCEPT 2>/dev/null || true
 iptables -A FORWARD -d ${VPN_SUBNET:-10.8.0.0}/24 -j ACCEPT 2>/dev/null || true
 iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
