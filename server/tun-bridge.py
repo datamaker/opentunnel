@@ -9,13 +9,16 @@ import socket
 import select
 import struct
 import fcntl
-import threading
 from typing import Optional
 
 # TUN device constants
 TUNSETIFF = 0x400454ca
 IFF_TUN = 0x0001
 IFF_NO_PI = 0x1000
+
+# Buffer sizes
+TUN_READ_SIZE = 65536
+SOCKET_BUFFER_SIZE = 1048576  # 1MB
 
 class TunBridge:
     def __init__(self, tun_name: str = 'vpn0', socket_path: str = '/tmp/vpn-tun.sock'):
@@ -25,10 +28,10 @@ class TunBridge:
         self.unix_socket: Optional[socket.socket] = None
         self.running = False
         self.clients: list = []
+        self.packet_count = 0
 
     def open_tun(self) -> int:
         """Open and configure TUN device"""
-        # Open /dev/net/tun
         tun_fd = os.open('/dev/net/tun', os.O_RDWR)
 
         # Configure TUN interface
@@ -44,19 +47,24 @@ class TunBridge:
 
     def setup_unix_socket(self):
         """Create Unix socket for Node.js communication"""
-        # Remove existing socket file
         if os.path.exists(self.socket_path):
             os.unlink(self.socket_path)
 
         self.unix_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.unix_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        # Increase socket buffer sizes
+        try:
+            self.unix_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, SOCKET_BUFFER_SIZE)
+            self.unix_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SOCKET_BUFFER_SIZE)
+        except:
+            pass
+
         self.unix_socket.bind(self.socket_path)
         self.unix_socket.listen(5)
         self.unix_socket.setblocking(False)
 
-        # Make socket accessible
         os.chmod(self.socket_path, 0o777)
-
         print(f"[TUN Bridge] Listening on {self.socket_path}")
 
     def handle_client(self, client_sock: socket.socket):
@@ -74,7 +82,7 @@ class TunBridge:
             # Read packet data
             packet = b''
             while len(packet) < length:
-                chunk = client_sock.recv(length - len(packet))
+                chunk = client_sock.recv(min(length - len(packet), 65536))
                 if not chunk:
                     return False
                 packet += chunk
@@ -82,7 +90,6 @@ class TunBridge:
             # Write to TUN
             if self.tun_fd and len(packet) > 0:
                 os.write(self.tun_fd, packet)
-                print(f"[TUN Bridge] Wrote {len(packet)} bytes to TUN")
 
             return True
         except BlockingIOError:
@@ -93,16 +100,20 @@ class TunBridge:
 
     def broadcast_to_clients(self, packet: bytes):
         """Send packet from TUN to all connected Node.js clients"""
-        # Length-prefix the packet
         data = struct.pack('>I', len(packet)) + packet
 
         for client in self.clients[:]:
             try:
                 client.sendall(data)
-            except Exception as e:
-                print(f"[TUN Bridge] Failed to send to client: {e}")
+            except BlockingIOError:
+                # Socket buffer full, skip this packet
+                pass
+            except Exception:
                 self.clients.remove(client)
-                client.close()
+                try:
+                    client.close()
+                except:
+                    pass
 
     def run(self):
         """Main event loop"""
@@ -113,12 +124,11 @@ class TunBridge:
         print("[TUN Bridge] Running...")
 
         while self.running:
-            # Build list of file descriptors to monitor
             read_fds = [self.tun_fd, self.unix_socket]
             read_fds.extend(self.clients)
 
             try:
-                readable, _, _ = select.select(read_fds, [], [], 0.1)
+                readable, _, _ = select.select(read_fds, [], [], 0.01)
             except select.error:
                 continue
 
@@ -128,18 +138,27 @@ class TunBridge:
                     try:
                         client, _ = self.unix_socket.accept()
                         client.setblocking(False)
+                        # Set client socket buffers
+                        try:
+                            client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, SOCKET_BUFFER_SIZE)
+                            client.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SOCKET_BUFFER_SIZE)
+                        except:
+                            pass
                         self.clients.append(client)
-                        print(f"[TUN Bridge] New client connected ({len(self.clients)} total)")
+                        print(f"[TUN Bridge] Client connected ({len(self.clients)} total)")
                     except BlockingIOError:
                         pass
 
                 elif fd == self.tun_fd:
-                    # Data from TUN device
+                    # Data from TUN device - read multiple packets
                     try:
-                        packet = os.read(self.tun_fd, 2048)
-                        if packet:
-                            print(f"[TUN Bridge] Read {len(packet)} bytes from TUN")
-                            self.broadcast_to_clients(packet)
+                        while True:
+                            packet = os.read(self.tun_fd, TUN_READ_SIZE)
+                            if packet:
+                                self.broadcast_to_clients(packet)
+                                self.packet_count += 1
+                            else:
+                                break
                     except BlockingIOError:
                         pass
 
@@ -147,7 +166,10 @@ class TunBridge:
                     # Data from Node.js client
                     if not self.handle_client(fd):
                         self.clients.remove(fd)
-                        fd.close()
+                        try:
+                            fd.close()
+                        except:
+                            pass
                         print(f"[TUN Bridge] Client disconnected ({len(self.clients)} remaining)")
 
     def stop(self):
@@ -158,7 +180,10 @@ class TunBridge:
             os.close(self.tun_fd)
 
         for client in self.clients:
-            client.close()
+            try:
+                client.close()
+            except:
+                pass
 
         if self.unix_socket:
             self.unix_socket.close()
@@ -166,7 +191,7 @@ class TunBridge:
         if os.path.exists(self.socket_path):
             os.unlink(self.socket_path)
 
-        print("[TUN Bridge] Stopped")
+        print(f"[TUN Bridge] Stopped (processed {self.packet_count} packets)")
 
 
 if __name__ == '__main__':
