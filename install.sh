@@ -248,7 +248,7 @@ ON CONFLICT (username) DO NOTHING;
 
 -- Sample user for testing (password: test123)
 INSERT INTO users (username, password_hash, email)
-VALUES ('testuser', '$2b$10$K.0HwpsoPDGaB/atFBmmXOGTw4ceeg33.WrxJx/FeC9.gOMzlSzPa', 'test@example.com')
+VALUES ('testuser', '$2b$10$X0x7rb4SJjhsm5wBdiGTrOaDxbb18joxI08SrtEECg4R.SqjApqB2', 'test@example.com')
 ON CONFLICT (username) DO NOTHING;
 SCHEMA_EOF
 
