@@ -46,22 +46,18 @@ JWT_SECRET=$(openssl rand -base64 32)
 
 # Create docker-compose.yml
 cat > docker-compose.yml << 'EOF'
-version: '3.8'
-
 services:
   vpn:
     image: datamaker/opentunnel:latest
     container_name: opentunnel-vpn
     restart: unless-stopped
+    network_mode: host
     cap_add:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
-    ports:
-      - "1194:1194"
-      - "8080:8080"
     environment:
-      - DB_HOST=db
+      - DB_HOST=localhost
       - DB_PORT=5432
       - DB_NAME=vpn
       - DB_USER=vpn
@@ -70,13 +66,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    networks:
-      - vpn-network
 
   db:
     image: postgres:15-alpine
     container_name: opentunnel-db
     restart: unless-stopped
+    network_mode: host
     environment:
       - POSTGRES_USER=vpn
       - POSTGRES_PASSWORD=${DB_PASSWORD}
@@ -84,16 +79,10 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vpn"]
+      test: ["CMD-SHELL", "pg_isready -U vpn -h localhost"]
       interval: 5s
       timeout: 5s
       retries: 5
-    networks:
-      - vpn-network
-
-networks:
-  vpn-network:
-    driver: bridge
 
 volumes:
   postgres_data:
