@@ -188,6 +188,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     client_platform VARCHAR(20) NOT NULL,
     client_version VARCHAR(20),
     connected_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    disconnected_at TIMESTAMP WITH TIME ZONE,
     last_activity TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     bytes_sent BIGINT DEFAULT 0,
     bytes_received BIGINT DEFAULT 0,
