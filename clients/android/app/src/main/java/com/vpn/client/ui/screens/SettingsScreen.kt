@@ -117,7 +117,7 @@ fun SettingsScreen(
                     onCheckedChange = { viewModel.setAutoReconnect(it) }
                 )
 
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
 
                 SettingsSwitch(
                     title = "Kill Switch",
@@ -127,7 +127,7 @@ fun SettingsScreen(
                     onCheckedChange = { viewModel.setKillSwitch(it) }
                 )
 
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
 
                 SettingsSwitch(
                     title = "Split Tunneling",
@@ -148,7 +148,7 @@ fun SettingsScreen(
                     icon = Icons.Outlined.Security
                 )
 
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
 
                 SettingsInfoRow(
                     title = "Encryption",
@@ -156,7 +156,7 @@ fun SettingsScreen(
                     icon = Icons.Outlined.Lock
                 )
 
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
 
                 SettingsInfoRow(
                     title = "Authentication",
@@ -175,7 +175,7 @@ fun SettingsScreen(
                     icon = Icons.Outlined.Info
                 )
 
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
 
                 SettingsInfoRow(
                     title = "Platform",

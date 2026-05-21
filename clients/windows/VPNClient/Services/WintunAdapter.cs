@@ -187,32 +187,31 @@ public class WintunAdapter : IDisposable
         return luid;
     }
 
-    private unsafe byte[]? ReceivePacketUnsafe()
+    private byte[]? ReceivePacketInternal()
     {
-        uint packetSize;
-        var packetPtr = WintunReceivePacket(_session, &packetSize);
+        var packetPtr = WintunReceivePacket(_session, out uint packetSize);
 
-        if (packetPtr == null)
+        if (packetPtr == IntPtr.Zero)
             return null;
 
         byte[]? packet = null;
         if (packetSize > 0)
         {
             packet = new byte[packetSize];
-            Marshal.Copy((IntPtr)packetPtr, packet, 0, (int)packetSize);
+            Marshal.Copy(packetPtr, packet, 0, (int)packetSize);
         }
 
         WintunReleaseReceivePacket(_session, packetPtr);
         return packet;
     }
 
-    private unsafe bool SendPacketUnsafe(byte[] packet)
+    private bool SendPacketInternal(byte[] packet)
     {
         var packetPtr = WintunAllocateSendPacket(_session, (uint)packet.Length);
-        if (packetPtr == null)
+        if (packetPtr == IntPtr.Zero)
             return false;
 
-        Marshal.Copy(packet, 0, (IntPtr)packetPtr, packet.Length);
+        Marshal.Copy(packet, 0, packetPtr, packet.Length);
         WintunSendPacket(_session, packetPtr);
         return true;
     }
@@ -243,7 +242,7 @@ public class WintunAdapter : IDisposable
                     // Read all available packets
                     while (!cancellationToken.IsCancellationRequested)
                     {
-                        var packet = ReceivePacketUnsafe();
+                        var packet = ReceivePacketInternal();
                         if (packet == null)
                             break;
 
@@ -272,7 +271,7 @@ public class WintunAdapter : IDisposable
             {
                 try
                 {
-                    if (!SendPacketUnsafe(packet))
+                    if (!SendPacketInternal(packet))
                     {
                         _logger.LogWarning("Failed to allocate send packet");
                     }
@@ -414,16 +413,16 @@ public class WintunAdapter : IDisposable
     private static extern IntPtr WintunGetReadWaitEvent(IntPtr Session);
 
     [DllImport(WINTUN_DLL, CallingConvention = CallingConvention.StdCall, SetLastError = true)]
-    private static extern byte* WintunReceivePacket(IntPtr Session, uint* PacketSize);
+    private static extern IntPtr WintunReceivePacket(IntPtr Session, out uint PacketSize);
 
     [DllImport(WINTUN_DLL, CallingConvention = CallingConvention.StdCall)]
-    private static extern void WintunReleaseReceivePacket(IntPtr Session, byte* Packet);
+    private static extern void WintunReleaseReceivePacket(IntPtr Session, IntPtr Packet);
 
     [DllImport(WINTUN_DLL, CallingConvention = CallingConvention.StdCall, SetLastError = true)]
-    private static extern byte* WintunAllocateSendPacket(IntPtr Session, uint PacketSize);
+    private static extern IntPtr WintunAllocateSendPacket(IntPtr Session, uint PacketSize);
 
     [DllImport(WINTUN_DLL, CallingConvention = CallingConvention.StdCall)]
-    private static extern void WintunSendPacket(IntPtr Session, byte* Packet);
+    private static extern void WintunSendPacket(IntPtr Session, IntPtr Packet);
 
     // Kernel32 imports for event handling
     [DllImport("kernel32.dll", SetLastError = true)]
