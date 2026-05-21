@@ -55,16 +55,28 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Download WinTun
+        run: |
+          Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile wintun.zip
+          Expand-Archive wintun.zip -DestinationPath wintun
+          Copy-Item wintun/wintun/bin/amd64/wintun.dll clients/windows/VPNClient/
+
       - name: Build Windows EXE
         working-directory: clients/windows
         run: |
           dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish
 
-      - name: Upload EXE
+      - name: Copy WinTun to output
+        run: |
+          Copy-Item wintun/wintun/bin/amd64/wintun.dll clients/windows/publish/
+
+      - name: Upload EXE and DLL
         uses: actions/upload-artifact@v4
         with:
           name: windows-exe
-          path: clients/windows/publish/*.exe
+          path: |
+            clients/windows/publish/*.exe
+            clients/windows/publish/wintun.dll
 
   # macOS build skipped - use TestFlight for distribution
 
