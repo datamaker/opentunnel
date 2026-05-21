@@ -45,9 +45,10 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 
-# Copy certificates, scripts, and TUN bridge
+# Copy certificates, scripts, public files, and TUN bridge
 COPY certs ./certs
 COPY scripts ./scripts
+COPY public ./public
 COPY tun-bridge.py ./
 COPY docker-entrypoint.sh /usr/local/bin/
 

@@ -7,6 +7,7 @@ import { SessionManager } from './session/sessionManager';
 import { IPPool } from './routing/ipPool';
 import { PacketRouter } from './routing/packetRouter';
 import { logger } from './utils/logger';
+import { startAdminServer } from './admin/adminServer';
 
 class VpnServer {
   private tlsServer: TlsServer;
@@ -93,6 +94,9 @@ class VpnServer {
 
       logger.info('VPN Server started successfully');
       this.printStatus();
+
+      // Start admin panel
+      startAdminServer();
     } catch (error) {
       logger.error('Failed to start VPN Server', error);
       throw error;
