@@ -12,7 +12,7 @@ namespace VPNClient.Services;
 /// WinTun adapter wrapper for managing the virtual network interface
 /// Uses P/Invoke to interact with wintun.dll
 /// </summary>
-public unsafe class WintunAdapter : IDisposable
+public class WintunAdapter : IDisposable
 {
     private readonly ILogger<WintunAdapter> _logger;
 
@@ -68,7 +68,8 @@ public unsafe class WintunAdapter : IDisposable
             try
             {
                 // Create the adapter
-                _adapter = WintunCreateAdapter(ADAPTER_NAME, TUNNEL_TYPE, ref AdapterGuid);
+                var guid = AdapterGuid;
+                _adapter = WintunCreateAdapter(ADAPTER_NAME, TUNNEL_TYPE, ref guid);
                 if (_adapter == IntPtr.Zero)
                 {
                     var error = Marshal.GetLastWin32Error();
@@ -186,6 +187,36 @@ public unsafe class WintunAdapter : IDisposable
         return luid;
     }
 
+    private unsafe byte[]? ReceivePacketUnsafe()
+    {
+        uint packetSize;
+        var packetPtr = WintunReceivePacket(_session, &packetSize);
+
+        if (packetPtr == null)
+            return null;
+
+        byte[]? packet = null;
+        if (packetSize > 0)
+        {
+            packet = new byte[packetSize];
+            Marshal.Copy((IntPtr)packetPtr, packet, 0, (int)packetSize);
+        }
+
+        WintunReleaseReceivePacket(_session, packetPtr);
+        return packet;
+    }
+
+    private unsafe bool SendPacketUnsafe(byte[] packet)
+    {
+        var packetPtr = WintunAllocateSendPacket(_session, (uint)packet.Length);
+        if (packetPtr == null)
+            return false;
+
+        Marshal.Copy(packet, 0, (IntPtr)packetPtr, packet.Length);
+        WintunSendPacket(_session, packetPtr);
+        return true;
+    }
+
     private void StartIoTasks(CancellationToken cancellationToken)
     {
         // Read task - reads packets from the TUN interface
@@ -212,21 +243,11 @@ public unsafe class WintunAdapter : IDisposable
                     // Read all available packets
                     while (!cancellationToken.IsCancellationRequested)
                     {
-                        uint packetSize;
-                        var packetPtr = WintunReceivePacket(_session, &packetSize);
-
-                        if (packetPtr == null)
+                        var packet = ReceivePacketUnsafe();
+                        if (packet == null)
                             break;
 
-                        if (packetSize > 0)
-                        {
-                            var packet = new byte[packetSize];
-                            Marshal.Copy((IntPtr)packetPtr, packet, 0, (int)packetSize);
-
-                            await _receiveChannel.Writer.WriteAsync(packet, cancellationToken);
-                        }
-
-                        WintunReleaseReceivePacket(_session, packetPtr);
+                        await _receiveChannel.Writer.WriteAsync(packet, cancellationToken);
                     }
                 }
                 catch (OperationCanceledException)
@@ -251,15 +272,10 @@ public unsafe class WintunAdapter : IDisposable
             {
                 try
                 {
-                    var packetPtr = WintunAllocateSendPacket(_session, (uint)packet.Length);
-                    if (packetPtr == null)
+                    if (!SendPacketUnsafe(packet))
                     {
                         _logger.LogWarning("Failed to allocate send packet");
-                        continue;
                     }
-
-                    Marshal.Copy(packet, 0, (IntPtr)packetPtr, packet.Length);
-                    WintunSendPacket(_session, packetPtr);
                 }
                 catch (Exception ex)
                 {
