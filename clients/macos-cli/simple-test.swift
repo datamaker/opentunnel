@@ -13,7 +13,8 @@ sec_protocol_options_set_verify_block(tlsOptions.securityProtocolOptions, { (_, 
 }, DispatchQueue.main)
 
 let params = NWParameters(tls: tlsOptions, tcp: NWProtocolTCP.Options())
-let connection = NWConnection(host: "localhost", port: 1194, using: params)
+let serverHost = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "20.196.137.41"
+let connection = NWConnection(host: NWEndpoint.Host(serverHost), port: 1194, using: params)
 
 var done = false
 var messageCount = 0
