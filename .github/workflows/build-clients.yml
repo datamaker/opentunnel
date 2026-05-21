@@ -66,119 +66,10 @@ jobs:
           name: windows-exe
           path: clients/windows/publish/*.exe
 
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Apple Certificate
-        env:
-          BUILD_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE }}
-          P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-
-          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o $CERTIFICATE_PATH
-
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-
-          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security list-keychain -d user -s $KEYCHAIN_PATH
-
-      - name: Install Provisioning Profiles
-        env:
-          PROVISIONING_PROFILE_APP: ${{ secrets.PROVISIONING_PROFILE_APP }}
-          PROVISIONING_PROFILE_EXT: ${{ secrets.PROVISIONING_PROFILE_EXTENSION }}
-        run: |
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          echo -n "$PROVISIONING_PROFILE_APP" | base64 --decode -o ~/Library/MobileDevice/Provisioning\ Profiles/VPNClient.provisionprofile
-          echo -n "$PROVISIONING_PROFILE_EXT" | base64 --decode -o ~/Library/MobileDevice/Provisioning\ Profiles/PacketTunnel.provisionprofile
-
-      - name: Configure Code Signing
-        working-directory: clients/macos/VPNClient
-        run: |
-          # Update project to use manual signing with provisioning profiles
-          sed -i '' 's/CODE_SIGN_STYLE = Automatic/CODE_SIGN_STYLE = Manual/g' VPNClient.xcodeproj/project.pbxproj
-          sed -i '' 's/MACOSX_DEPLOYMENT_TARGET = 26.2/MACOSX_DEPLOYMENT_TARGET = 14.0/g' VPNClient.xcodeproj/project.pbxproj
-          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = 26.2/IPHONEOS_DEPLOYMENT_TARGET = 15.0/g' VPNClient.xcodeproj/project.pbxproj
-          sed -i '' 's/XROS_DEPLOYMENT_TARGET = 26.2/XROS_DEPLOYMENT_TARGET = 2.0/g' VPNClient.xcodeproj/project.pbxproj
-
-          # Use Python to set provisioning profiles correctly
-          python3 << 'PYEOF'
-          import re
-
-          with open('VPNClient.xcodeproj/project.pbxproj', 'r') as f:
-              content = f.read()
-
-          # Replace empty PROVISIONING_PROFILE_SPECIFIER for VPNClient (after kr.co.datasee.VPNClient;)
-          # and PacketTunnel (after kr.co.datasee.VPNClient.PacketTunnel;)
-
-          lines = content.split('\n')
-          new_lines = []
-          i = 0
-          while i < len(lines):
-              line = lines[i]
-              new_lines.append(line)
-
-              # Check if this is VPNClient bundle ID (not PacketTunnel)
-              if 'PRODUCT_BUNDLE_IDENTIFIER = kr.co.datasee.VPNClient;' in line and 'PacketTunnel' not in line:
-                  # Look ahead for PROVISIONING_PROFILE_SPECIFIER
-                  for j in range(i+1, min(i+10, len(lines))):
-                      if 'PROVISIONING_PROFILE_SPECIFIER = ""' in lines[j]:
-                          lines[j] = lines[j].replace('PROVISIONING_PROFILE_SPECIFIER = ""', 'PROVISIONING_PROFILE_SPECIFIER = "VPNClient Development"')
-                          break
-
-              # Check if this is PacketTunnel bundle ID
-              if 'PRODUCT_BUNDLE_IDENTIFIER = kr.co.datasee.VPNClient.PacketTunnel;' in line:
-                  for j in range(i+1, min(i+10, len(lines))):
-                      if 'PROVISIONING_PROFILE_SPECIFIER = ""' in lines[j]:
-                          lines[j] = lines[j].replace('PROVISIONING_PROFILE_SPECIFIER = ""', 'PROVISIONING_PROFILE_SPECIFIER = "VPNClient PacketTunnel Development"')
-                          break
-
-              i += 1
-
-          with open('VPNClient.xcodeproj/project.pbxproj', 'w') as f:
-              f.write('\n'.join(lines))
-
-          print("Project file updated successfully")
-          PYEOF
-
-      - name: Build macOS App
-        working-directory: clients/macos/VPNClient
-        run: |
-          xcodebuild -scheme VPNClient -configuration Release \
-            -archivePath $RUNNER_TEMP/VPNClient.xcarchive archive \
-            -destination "platform=macOS" \
-            CODE_SIGN_IDENTITY="${{ secrets.APPLE_CODE_SIGN_IDENTITY }}" \
-            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}"
-
-      - name: Export App
-        run: |
-          xcodebuild -exportArchive \
-            -archivePath $RUNNER_TEMP/VPNClient.xcarchive \
-            -exportPath $RUNNER_TEMP/export \
-            -exportOptionsPlist clients/macos/ExportOptions.plist
-
-      - name: Create DMG
-        run: |
-          hdiutil create -volname "OpenTunnel VPN" \
-            -srcfolder $RUNNER_TEMP/export/*.app \
-            -ov -format UDZO \
-            OpenTunnel-VPN.dmg
-
-      - name: Upload DMG
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-dmg
-          path: OpenTunnel-VPN.dmg
+  # macOS build skipped - use TestFlight for distribution
 
   create-release:
-    needs: [build-android, build-windows, build-macos]
+    needs: [build-android, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -193,7 +84,6 @@ jobs:
           files: |
             artifacts/android-apk/*
             artifacts/windows-exe/*
-            artifacts/macos-dmg/*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
