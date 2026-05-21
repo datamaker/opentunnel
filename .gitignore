@@ -57,3 +57,7 @@ obj/
 # Test
 coverage/
 .nyc_output/
+
+# Provisioning profiles
+*.provisionprofile
+*.mobileprovision
