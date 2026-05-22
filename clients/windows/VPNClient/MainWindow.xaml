@@ -6,7 +6,7 @@
         xmlns:views="clr-namespace:VPNClient.Views"
         xmlns:vm="clr-namespace:VPNClient.ViewModels"
         mc:Ignorable="d"
-        Title="VPN Client"
+        Title="OpenTunnel"
         Height="700"
         Width="450"
         MinHeight="600"
@@ -40,7 +40,7 @@
                 <!-- Logo and Title -->
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                     <Ellipse Width="40" Height="40" Fill="{StaticResource PrimaryBrush}"/>
-                    <TextBlock Text="VPN Shield" FontSize="20" FontWeight="SemiBold"
+                    <TextBlock Text="OpenTunnel" FontSize="20" FontWeight="SemiBold"
                                Foreground="{StaticResource TextPrimaryBrush}"
                                Margin="12,0,0,0" VerticalAlignment="Center"/>
                 </StackPanel>

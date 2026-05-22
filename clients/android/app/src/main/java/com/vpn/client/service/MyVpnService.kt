@@ -218,7 +218,7 @@ class MyVpnService : VpnService() {
 
     private fun buildVpnInterface(config: VpnConfig): ParcelFileDescriptor? {
         val builder = Builder()
-            .setSession("VPN Client")
+            .setSession("OpenTunnel")
             .setMtu(config.mtu)
             .addAddress(config.assignedIP, getSubnetPrefix(config.subnetMask))
 
@@ -413,7 +413,7 @@ class MyVpnService : VpnService() {
         )
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("VPN Client")
+            .setContentTitle("OpenTunnel")
             .setContentText(status)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentIntent(pendingIntent)

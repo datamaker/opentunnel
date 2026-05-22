@@ -58,7 +58,7 @@ struct MainView: View {
     private var headerSection: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text("VPN Client")
+                Text("OpenTunnel")
                     .font(.title2)
                     .fontWeight(.bold)
                 Text(viewModel.username)

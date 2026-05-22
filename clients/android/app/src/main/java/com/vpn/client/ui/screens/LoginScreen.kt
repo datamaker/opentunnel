@@ -72,7 +72,7 @@ fun LoginScreen(
 
             // Title
             Text(
-                text = "VPN Client",
+                text = "OpenTunnel",
                 style = MaterialTheme.typography.headlineLarge,
                 fontWeight = FontWeight.Bold
             )

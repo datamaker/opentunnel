@@ -63,7 +63,7 @@ struct LoginView: View {
                 )
 
             VStack(spacing: 8) {
-                Text("VPN Client")
+                Text("OpenTunnel")
                     .font(.largeTitle)
                     .fontWeight(.bold)
 

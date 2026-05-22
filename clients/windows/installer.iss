@@ -1,7 +1,7 @@
 ; VPN Client Installer Script for Inno Setup
 ; Requires Inno Setup 6.0 or later
 
-#define MyAppName "VPN Client"
+#define MyAppName "OpenTunnel"
 #define MyAppVersion "1.0.3"
 #define MyAppPublisher "OpenTunnel"
 #define MyAppURL "https://github.com/datamaker/opentunnel"
@@ -21,7 +21,7 @@ DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 LicenseFile=..\..\LICENSE
 OutputDir=installer_output
-OutputBaseFilename=VPNClient-Setup-{#MyAppVersion}
+OutputBaseFilename=OpenTunnel-Setup-{#MyAppVersion}
 SetupIconFile=VPNClient\Assets\app.ico
 Compression=lzma2
 SolidCompression=yes
