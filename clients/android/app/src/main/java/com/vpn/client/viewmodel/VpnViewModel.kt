@@ -34,19 +34,25 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     private val _loginSuccess = MutableSharedFlow<Unit>()
     val loginSuccess: SharedFlow<Unit> = _loginSuccess.asSharedFlow()
 
-    // Session
+    // Session & Credentials
     private val _sessionToken = MutableStateFlow("")
     val sessionToken: StateFlow<String> = _sessionToken.asStateFlow()
+
+    private val _username = MutableStateFlow("")
+    val username: StateFlow<String> = _username.asStateFlow()
+
+    private val _password = MutableStateFlow("")
+    val password: StateFlow<String> = _password.asStateFlow()
 
     // Connection State
     private val _connectionState = MutableStateFlow(VpnConnectionState.DISCONNECTED)
     val connectionState: StateFlow<VpnConnectionState> = _connectionState.asStateFlow()
 
     // Server Settings
-    private val _serverAddress = MutableStateFlow("vpn.example.com")
+    private val _serverAddress = MutableStateFlow("20.196.137.41")
     val serverAddress: StateFlow<String> = _serverAddress.asStateFlow()
 
-    private val _serverPort = MutableStateFlow(443)
+    private val _serverPort = MutableStateFlow(1194)
     val serverPort: StateFlow<Int> = _serverPort.asStateFlow()
 
     // VPN Settings
@@ -81,6 +87,8 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
             _loginError.value = null
             _serverAddress.value = serverAddress
             _serverPort.value = serverPort
+            _username.value = username
+            _password.value = password
 
             try {
                 val result = performLogin(username, password, serverAddress, serverPort)
@@ -135,6 +143,8 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isLoggedIn.value = false
             _sessionToken.value = ""
+            _username.value = ""
+            _password.value = ""
             _connectionState.value = VpnConnectionState.DISCONNECTED
             stopDurationTimer()
         }

@@ -35,8 +35,8 @@ fun LoginScreen(
 
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var serverAddress by remember { mutableStateOf("vpn.example.com") }
-    var serverPort by remember { mutableStateOf("443") }
+    var serverAddress by remember { mutableStateOf("20.196.137.41") }
+    var serverPort by remember { mutableStateOf("1194") }
     var passwordVisible by remember { mutableStateOf(false) }
     var showAdvancedSettings by remember { mutableStateOf(false) }
 

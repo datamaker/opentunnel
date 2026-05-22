@@ -226,16 +226,18 @@ class TlsConnection {
 
     /**
      * Creates an SSL context configured for TLS 1.3.
+     * Note: For development, trusts all certificates. Use proper CA validation in production.
      */
     private fun createSslContext(): SSLContext {
-        // Use default trust manager (system CA certificates)
-        val trustManagerFactory = TrustManagerFactory.getInstance(
-            TrustManagerFactory.getDefaultAlgorithm()
-        )
-        trustManagerFactory.init(null as KeyStore?)
+        // Trust all certificates for development (NOT for production!)
+        val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {}
+            override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {}
+            override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
+        })
 
         val sslContext = SSLContext.getInstance("TLSv1.3")
-        sslContext.init(null, trustManagerFactory.trustManagers, SecureRandom())
+        sslContext.init(null, trustAllCerts, SecureRandom())
 
         return sslContext
     }

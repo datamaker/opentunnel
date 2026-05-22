@@ -28,7 +28,8 @@ class MyVpnService : VpnService() {
         const val ACTION_DISCONNECT = "com.vpn.client.DISCONNECT"
         const val EXTRA_SERVER_ADDRESS = "server_address"
         const val EXTRA_SERVER_PORT = "server_port"
-        const val EXTRA_SESSION_TOKEN = "session_token"
+        const val EXTRA_USERNAME = "username"
+        const val EXTRA_PASSWORD = "password"
 
         private const val TAG = "MyVpnService"
         private const val NOTIFICATION_CHANNEL_ID = "vpn_service_channel"
@@ -45,7 +46,8 @@ class MyVpnService : VpnService() {
 
     private var serverAddress: String = ""
     private var serverPort: Int = 443
-    private var sessionToken: String = ""
+    private var username: String = ""
+    private var password: String = ""
 
     // Traffic statistics
     private val bytesReceived = AtomicLong(0)
@@ -64,9 +66,10 @@ class MyVpnService : VpnService() {
             ACTION_CONNECT -> {
                 serverAddress = intent.getStringExtra(EXTRA_SERVER_ADDRESS) ?: ""
                 serverPort = intent.getIntExtra(EXTRA_SERVER_PORT, 443)
-                sessionToken = intent.getStringExtra(EXTRA_SESSION_TOKEN) ?: ""
+                username = intent.getStringExtra(EXTRA_USERNAME) ?: ""
+                password = intent.getStringExtra(EXTRA_PASSWORD) ?: ""
 
-                if (serverAddress.isNotEmpty()) {
+                if (serverAddress.isNotEmpty() && username.isNotEmpty()) {
                     startVpn()
                 }
             }
@@ -98,10 +101,10 @@ class MyVpnService : VpnService() {
                     connect(serverAddress, serverPort)
                 }
 
-                // Request configuration from server
-                requestConfiguration()
+                // Authenticate with server
+                authenticate()
 
-                // Wait for configuration
+                // Receive VPN configuration (sent right after auth response)
                 val config = receiveConfiguration()
                 vpnConfig = config
 
@@ -114,10 +117,19 @@ class MyVpnService : VpnService() {
 
                 updateNotification("Connected to $serverAddress")
 
+                // Notify UI of successful connection
+                val successIntent = Intent("com.vpn.client.VPN_CONNECTED").apply {
+                    setPackage(packageName)
+                    putExtra("assigned_ip", config.assignedIP)
+                }
+                sendBroadcast(successIntent)
+                Log.i(TAG, "Sent VPN_CONNECTED broadcast with IP: ${config.assignedIP}")
+
                 // Start tunnel operations
                 launch { readFromTunnel() }
                 launch { readFromServer() }
                 launch { sendKeepalive() }
+                launch { sendTrafficStats() }
 
                 Log.i(TAG, "VPN connection established")
 
@@ -156,19 +168,46 @@ class MyVpnService : VpnService() {
             }
         }
 
+        // Notify UI of disconnect
+        sendBroadcast(Intent("com.vpn.client.VPN_DISCONNECTED").apply {
+            setPackage(packageName)
+        })
+
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
-    private suspend fun requestConfiguration() {
-        val request = ConfigRequest(sessionToken = sessionToken)
-        val requestBytes = VpnMessageSerializer.serializeConfigRequest(request)
-        tlsConnection?.send(VpnMessageType.AUTH_REQUEST, requestBytes)
+    private suspend fun authenticate(): String = withContext(Dispatchers.IO) {
+        val connection = tlsConnection ?: throw Exception("Connection not established")
+
+        // Send auth request with credentials
+        val authRequest = AuthRequest(
+            username = username,
+            password = password,
+            clientVersion = "1.0.0",
+            platform = "android"
+        )
+        val requestBytes = VpnMessageSerializer.serializeAuthRequest(authRequest)
+        connection.send(VpnMessageType.AUTH_REQUEST, requestBytes)
+
+        // Receive auth response
+        val response = connection.receive()
+        if (response.first != VpnMessageType.AUTH_RESPONSE) {
+            throw Exception("Expected AUTH_RESPONSE, got ${response.first}")
+        }
+
+        val authResponse = VpnMessageSerializer.deserializeAuthResponse(response.second)
+        if (!authResponse.success) {
+            throw Exception(authResponse.errorMessage ?: "Authentication failed")
+        }
+
+        authResponse.sessionToken
     }
 
     private suspend fun receiveConfiguration(): VpnConfig = withContext(Dispatchers.IO) {
         val connection = tlsConnection ?: throw Exception("Connection not established")
 
+        // Server sends CONFIG_PUSH right after AUTH_RESPONSE
         val response = connection.receive()
         if (response.first != VpnMessageType.CONFIG_PUSH) {
             throw Exception("Expected CONFIG_PUSH, got ${response.first}")
@@ -309,12 +348,32 @@ class MyVpnService : VpnService() {
         }
     }
 
+    private suspend fun sendTrafficStats() = withContext(Dispatchers.IO) {
+        try {
+            while (isRunning.get() && isActive) {
+                delay(1000) // Update every second
+
+                val statsIntent = Intent("com.vpn.client.VPN_STATS").apply {
+                    setPackage(packageName)
+                    putExtra("bytes_received", bytesReceived.get())
+                    putExtra("bytes_sent", bytesSent.get())
+                }
+                sendBroadcast(statsIntent)
+            }
+        } catch (e: Exception) {
+            if (isRunning.get()) {
+                Log.e(TAG, "Error sending traffic stats", e)
+            }
+        }
+    }
+
     private fun handleConnectionError(e: Exception) {
         Log.e(TAG, "Connection error: ${e.message}")
         stopVpn()
 
         // Broadcast error to UI
         val intent = Intent("com.vpn.client.VPN_ERROR").apply {
+            setPackage(packageName)
             putExtra("error_message", e.message)
         }
         sendBroadcast(intent)
