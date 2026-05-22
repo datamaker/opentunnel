@@ -73,13 +73,20 @@ jobs:
         run: |
           Copy-Item wintun/wintun/bin/amd64/wintun.dll clients/windows/publish/
 
-      - name: Upload EXE and DLL
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup -y
+
+      - name: Build Installer
+        working-directory: clients/windows
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+      - name: Upload Installer
         uses: actions/upload-artifact@v4
         with:
-          name: windows-exe
-          path: |
-            clients/windows/publish/*.exe
-            clients/windows/publish/wintun.dll
+          name: windows-installer
+          path: clients/windows/installer_output/*.exe
 
   # macOS build skipped - use TestFlight for distribution
 
@@ -98,7 +105,7 @@ jobs:
         with:
           files: |
             artifacts/android-apk/*
-            artifacts/windows-exe/*
+            artifacts/windows-installer/*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
