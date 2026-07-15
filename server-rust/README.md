@@ -39,9 +39,11 @@ from the Node.js server's later fixes are included.
 
 The TUN device is driven **natively in pure Rust** — `src/tun.rs` opens
 `/dev/net/tun`, configures it with the `TUNSETIFF` ioctl (via `libc`), and does
-async reads/writes on the raw fd with Tokio's `AsyncFd`. No Python helper is
-involved. (`ip`/`iptables` are still shelled out for interface/NAT setup, as in
-the original server.)
+async reads/writes on the raw fd with Tokio's `AsyncFd`. The interface itself
+(address, netmask, MTU, up) is also configured natively via `SIOCSIF*` ioctls on
+an `AF_INET` socket — no `ip`/`iproute2` and no Python. The only remaining
+shell-out is a one-time `iptables` MASQUERADE rule at startup (kept for
+operational visibility; it is off the packet path).
 
 - **client → internet**: `DATA_PACKET` frames are written directly to the TUN fd.
 - **internet → client**: packets read from TUN are routed to the owning session

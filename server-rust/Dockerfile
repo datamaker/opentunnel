@@ -30,12 +30,12 @@ LABEL version="1.0.0"
 
 WORKDIR /app
 
-# Runtime dependencies. The TUN device is handled natively in the binary, so no
-# Python is needed; `ip`/`iptables` come from iproute2/iptables.
+# Runtime dependencies. The TUN device is opened and the interface configured
+# natively in the binary (no Python, no iproute2). Only iptables is needed, for
+# the one-time NAT/MASQUERADE rule set at startup.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     iptables \
-    iproute2 \
     netcat-openbsd \
     bash \
     curl \

@@ -5,7 +5,6 @@
 //! descriptor using Tokio's [`AsyncFd`]. A mock device is used in development so
 //! the server runs without root or `/dev/net/tun`.
 
-use anyhow::Context;
 use std::process::Stdio;
 use tokio::sync::mpsc;
 
@@ -98,29 +97,23 @@ fn setup_nat(gateway_cidr: &str, iface: &str) {
     }
 }
 
-fn run_ip(args: &[&str]) -> anyhow::Result<()> {
-    let status = std::process::Command::new("ip")
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("failed to run `ip`")?;
-    if !status.success() {
-        anyhow::bail!("`ip {}` failed", args.join(" "));
-    }
-    Ok(())
-}
-
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{run_ip, setup_nat, TunHandle};
+    use super::{setup_nat, TunHandle};
     use anyhow::Context;
+    use std::net::Ipv4Addr;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
     use tokio::io::unix::AsyncFd;
     use tokio::sync::mpsc;
 
     // ioctl request for setting TUN/TAP interface flags (Linux <linux/if_tun.h>).
     const TUNSETIFF: libc::c_ulong = 0x4004_54ca;
+    // Socket ioctls for interface configuration (Linux <bits/ioctls.h>).
+    const SIOCSIFADDR: libc::c_ulong = 0x8916;
+    const SIOCSIFNETMASK: libc::c_ulong = 0x891c;
+    const SIOCSIFMTU: libc::c_ulong = 0x8922;
+    const SIOCGIFFLAGS: libc::c_ulong = 0x8913;
+    const SIOCSIFFLAGS: libc::c_ulong = 0x8914;
     const MAX_PACKET: usize = 65536;
 
     /// Owned TUN file descriptor with an `AsRawFd` impl for `AsyncFd`.
@@ -187,6 +180,94 @@ mod linux {
         Ok(())
     }
 
+    /// `struct ifreq` with a generic 24-byte union area, used for the
+    /// interface-configuration ioctls.
+    #[repr(C)]
+    struct IfreqCfg {
+        name: [libc::c_char; libc::IFNAMSIZ],
+        data: [u8; 24],
+    }
+
+    impl IfreqCfg {
+        fn new(name: &str) -> anyhow::Result<Self> {
+            let bytes = name.as_bytes();
+            anyhow::ensure!(bytes.len() < libc::IFNAMSIZ, "interface name too long");
+            let mut ifr = IfreqCfg {
+                name: [0; libc::IFNAMSIZ],
+                data: [0; 24],
+            };
+            for (dst, &b) in ifr.name.iter_mut().zip(bytes) {
+                *dst = b as libc::c_char;
+            }
+            Ok(ifr)
+        }
+
+        /// Write a `sockaddr_in` for `addr` into the union area.
+        fn set_sockaddr_in(&mut self, addr: Ipv4Addr) {
+            self.data = [0; 24];
+            self.data[0..2].copy_from_slice(&(libc::AF_INET as u16).to_ne_bytes());
+            // sin_port stays 0; sin_addr is network-order, i.e. the raw octets.
+            self.data[4..8].copy_from_slice(&addr.octets());
+        }
+    }
+
+    fn ioctl(sock: RawFd, req: libc::c_ulong, ifr: &mut IfreqCfg, what: &str) -> anyhow::Result<()> {
+        let rc = unsafe { libc::ioctl(sock, req, ifr as *mut IfreqCfg) };
+        if rc < 0 {
+            return Err(std::io::Error::last_os_error()).context(what.to_string());
+        }
+        Ok(())
+    }
+
+    /// Configure the interface (address, netmask, MTU, up) via ioctls on an
+    /// AF_INET socket — the pure-Rust equivalent of `ip addr add` / `ip link set`.
+    fn configure_interface(
+        name: &str,
+        mtu: u32,
+        addr: Ipv4Addr,
+        netmask: Ipv4Addr,
+    ) -> anyhow::Result<()> {
+        let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+        if sock < 0 {
+            return Err(std::io::Error::last_os_error()).context("open AF_INET socket");
+        }
+        // Own the fd so it is closed on every return path.
+        let sock = unsafe { OwnedFd::from_raw_fd(sock) };
+        let fd = sock.as_raw_fd();
+
+        // Address + netmask.
+        let mut ifr = IfreqCfg::new(name)?;
+        ifr.set_sockaddr_in(addr);
+        ioctl(fd, SIOCSIFADDR, &mut ifr, "ioctl SIOCSIFADDR")?;
+
+        ifr.set_sockaddr_in(netmask);
+        ioctl(fd, SIOCSIFNETMASK, &mut ifr, "ioctl SIOCSIFNETMASK")?;
+
+        // MTU (ifr_mtu is a c_int at the start of the union).
+        let mut ifr = IfreqCfg::new(name)?;
+        ifr.data[0..4].copy_from_slice(&(mtu as libc::c_int).to_ne_bytes());
+        ioctl(fd, SIOCSIFMTU, &mut ifr, "ioctl SIOCSIFMTU")?;
+
+        // Bring the interface up: read flags, set IFF_UP, write back.
+        let mut ifr = IfreqCfg::new(name)?;
+        ioctl(fd, SIOCGIFFLAGS, &mut ifr, "ioctl SIOCGIFFLAGS")?;
+        let mut flags = libc::c_short::from_ne_bytes([ifr.data[0], ifr.data[1]]);
+        flags |= libc::IFF_UP as libc::c_short;
+        ifr.data[0..2].copy_from_slice(&flags.to_ne_bytes());
+        ioctl(fd, SIOCSIFFLAGS, &mut ifr, "ioctl SIOCSIFFLAGS")?;
+
+        Ok(())
+    }
+
+    fn netmask_from_prefix(prefix: u32) -> Ipv4Addr {
+        let bits = if prefix == 0 {
+            0
+        } else {
+            0xffff_ffffu32 << (32 - prefix.min(32))
+        };
+        Ipv4Addr::from(bits)
+    }
+
     pub async fn start(
         name: &str,
         mtu: u32,
@@ -194,11 +275,12 @@ mod linux {
     ) -> anyhow::Result<(TunHandle, mpsc::Receiver<Vec<u8>>)> {
         let fd = open_tun(name).context("failed to open TUN device")?;
 
-        // Bring the interface up, set MTU, assign the gateway, configure NAT.
-        run_ip(&["link", "set", name, "mtu", &mtu.to_string()])
-            .context("failed to set TUN mtu")?;
-        run_ip(&["addr", "add", gateway_cidr, "dev", name]).ok();
-        run_ip(&["link", "set", name, "up"]).context("failed to bring TUN up")?;
+        // Assign the gateway address/netmask, set MTU and bring the interface up
+        // — all via ioctls (no `ip` shell-out) — then configure NAT.
+        let (gw, prefix) = gateway_cidr.split_once('/').unwrap_or((gateway_cidr, "24"));
+        let gateway: Ipv4Addr = gw.parse().context("invalid gateway address")?;
+        let netmask = netmask_from_prefix(prefix.parse().unwrap_or(24));
+        configure_interface(name, mtu, gateway, netmask).context("failed to configure TUN interface")?;
         setup_nat(gateway_cidr, name);
 
         let async_fd = std::sync::Arc::new(AsyncFd::new(TunFd(fd)).context("register TUN fd")?);
