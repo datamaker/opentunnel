@@ -77,6 +77,13 @@ export class MessageHandler extends EventEmitter {
           this.emit('keepalive');
           break;
 
+        case MessageType.KEEPALIVE_ACK:
+          // Client's response to a server-initiated keepalive. No action
+          // needed beyond liveness (lastActivity is bumped on raw socket
+          // data), but handle it explicitly so it isn't logged as unknown.
+          this.emit('keepalive_ack');
+          break;
+
         case MessageType.DISCONNECT:
           this.emit('disconnect');
           break;

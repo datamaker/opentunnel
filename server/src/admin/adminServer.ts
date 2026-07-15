@@ -39,6 +39,17 @@ function authMiddleware(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
+// Health check (no auth) — used by the Docker HEALTHCHECK
+app.get('/health', async (_req: Request, res: Response) => {
+  try {
+    await pool.query('SELECT 1');
+    res.status(200).json({ status: 'ok', db: 'up' });
+  } catch (error) {
+    logger.warn('Health check DB probe failed', error);
+    res.status(503).json({ status: 'degraded', db: 'down' });
+  }
+});
+
 // Auth endpoints
 app.post('/api/login', (req: Request, res: Response) => {
   const { password } = req.body;
