@@ -5,6 +5,7 @@
 
 use crate::config::AdminConfig;
 use crate::db::DbPool;
+use crate::split::SplitPolicy;
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
@@ -27,6 +28,7 @@ struct AdminState {
     db: DbPool,
     admin_password: String,
     tokens: Arc<Mutex<HashMap<String, i64>>>,
+    split: Arc<SplitPolicy>,
 }
 
 type ApiError = (StatusCode, Json<Value>);
@@ -41,11 +43,12 @@ fn db_error() -> ApiError {
 }
 
 /// Start the admin server; runs until the process exits.
-pub async fn serve(cfg: AdminConfig, db: DbPool) -> anyhow::Result<()> {
+pub async fn serve(cfg: AdminConfig, db: DbPool, split: Arc<SplitPolicy>) -> anyhow::Result<()> {
     let state = AdminState {
         db,
         admin_password: cfg.password,
         tokens: Arc::new(Mutex::new(HashMap::new())),
+        split,
     };
 
     let app = Router::new()
@@ -58,6 +61,7 @@ pub async fn serve(cfg: AdminConfig, db: DbPool) -> anyhow::Result<()> {
         .route("/api/sessions/:id", delete(delete_session))
         .route("/api/stats", get(stats))
         .route("/api/logs", get(logs))
+        .route("/api/split", get(get_split).post(set_split))
         .fallback_service(ServeDir::new("public").append_index_html_on_directories(true))
         .with_state(state);
 
@@ -481,4 +485,49 @@ async fn logs(
         })
         .collect();
     Ok(Json(json!(out)))
+}
+
+// ---------------------------------------------------------------------------
+// Split-tunnel policy
+// ---------------------------------------------------------------------------
+
+fn split_json(snap: &crate::split::SplitSnapshot) -> Value {
+    serde_json::to_value(snap).unwrap_or_else(|_| json!({}))
+}
+
+/// View the effective split-tunnel policy (static routes + resolved domain IPs).
+async fn get_split(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Query(q): Query<TokenQuery>,
+) -> ApiResult {
+    check_auth(&state, &headers, q.token.as_deref())?;
+    Ok(Json(split_json(&state.split.snapshot())))
+}
+
+#[derive(Deserialize)]
+struct SplitBody {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    routes: Vec<String>,
+    #[serde(default)]
+    domains: Vec<String>,
+}
+
+/// Replace the split-tunnel policy at runtime, re-resolve domains, and return
+/// the new effective policy. Takes effect for subsequently-connecting clients.
+async fn set_split(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Query(q): Query<TokenQuery>,
+    Json(body): Json<SplitBody>,
+) -> ApiResult {
+    check_auth(&state, &headers, q.token.as_deref())?;
+    state
+        .split
+        .update(body.enabled, body.routes, body.domains)
+        .await;
+    tracing::info!("Split-tunnel policy updated via admin API");
+    Ok(Json(split_json(&state.split.snapshot())))
 }

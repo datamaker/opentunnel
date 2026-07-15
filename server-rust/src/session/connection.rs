@@ -249,6 +249,7 @@ impl Connection {
 
     async fn send_config(&self, ip: Ipv4Addr) {
         let cfg = &self.state.config;
+        let split = self.state.split.snapshot();
         let config = ConfigPush {
             assigned_ip: ip.to_string(),
             subnet_mask: self.state.ip_pool.subnet_mask(),
@@ -256,6 +257,11 @@ impl Connection {
             dns: cfg.vpn.dns.clone(),
             mtu: cfg.vpn.mtu,
             keepalive_interval: 10,
+            split_tunnel: split.enabled,
+            // Only advertise the include lists in split mode; a full tunnel
+            // leaves them empty and the client installs a default route.
+            included_routes: if split.enabled { split.routes } else { Vec::new() },
+            included_domains: if split.enabled { split.domains } else { Vec::new() },
         };
         let _ = self.tx.send(serializer::config_push(&config)).await;
     }

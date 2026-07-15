@@ -13,6 +13,7 @@ mod logging;
 mod protocol;
 mod router;
 mod session;
+mod split;
 mod state;
 mod tls;
 mod tun;
@@ -22,6 +23,7 @@ use auth::AuthService;
 use config::Config;
 use ippool::IpPool;
 use session::SessionManager;
+use split::SplitPolicy;
 use state::SharedState;
 use std::sync::Arc;
 use std::time::Duration;
@@ -54,6 +56,21 @@ async fn main() -> anyhow::Result<()> {
     let auth = Arc::new(AuthService::new(db.clone(), config.jwt_secret.clone()));
     let sessions = Arc::new(SessionManager::new());
 
+    // Split-tunnel policy: resolve domains once up front, then refresh on a timer.
+    let split = Arc::new(SplitPolicy::new(&config.split));
+    if config.split.enabled {
+        split.refresh_once().await;
+        let snap = split.snapshot();
+        tracing::info!(
+            "Split tunnel ENABLED: {} route(s), {} domain(s)",
+            snap.routes.len(),
+            snap.domains.len()
+        );
+        split.clone().spawn_refresher();
+    } else {
+        tracing::info!("Split tunnel disabled (full tunnel)");
+    }
+
     // TUN device + packet router. Use the mock device outside production.
     let gateway_cidr = format!("{}/24", ip_pool.gateway());
     let (tun_handle, tun_rx) = tun::start(
@@ -75,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
         auth: auth.clone(),
         ip_pool: ip_pool.clone(),
         sessions: sessions.clone(),
+        split: split.clone(),
         tun: tun_handle,
     });
 
@@ -82,8 +100,9 @@ async fn main() -> anyhow::Result<()> {
     {
         let admin_cfg = config.admin.clone();
         let admin_db = db.clone();
+        let admin_split = split.clone();
         tokio::spawn(async move {
-            if let Err(e) = admin::serve(admin_cfg, admin_db).await {
+            if let Err(e) = admin::serve(admin_cfg, admin_db, admin_split).await {
                 tracing::error!("Admin server error: {e}");
             }
         });

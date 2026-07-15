@@ -83,6 +83,47 @@ The image is self-contained (binary + admin UI, no Python) and drops in against
 the existing `docker-compose.yml` / PostgreSQL setup. Requires
 `--cap-add NET_ADMIN` and `--device /dev/net/tun` for the real data plane.
 
+## Split tunneling (destination-based routing)
+
+By default the server runs a **full tunnel** (client installs a default route).
+Enable **split tunneling** to have clients route *only* specific destinations —
+IP ranges and/or domains — through the VPN, leaving everything else on their
+normal connection.
+
+Configure it via env (or at runtime via the admin API):
+
+```bash
+SPLIT_TUNNEL=true
+SPLIT_INCLUDE_ROUTES=10.0.0.0/8,192.168.0.0/16   # IP CIDRs
+SPLIT_INCLUDE_DOMAINS=internal.example.com,api.example.com
+SPLIT_DNS_REFRESH_SECS=300                        # domain re-resolve interval
+```
+
+How domains work: the **server** resolves each domain to its IPv4 addresses
+(refreshed on a timer) and folds them into the pushed route list as `/32`
+entries, so even clients that can't match by domain get concrete routes. The
+original domain names are pushed too (`includedDomains`) for clients that do
+their own DNS-based matching.
+
+### Client contract
+
+The policy is delivered in the post-auth config message (`ConfigPush`):
+
+| Field | Meaning |
+|-------|---------|
+| `splitTunnel` | `true` = install routes only for the lists below; `false` = full tunnel (default route) |
+| `includedRoutes` | IP CIDRs to route through the tunnel (static routes + resolved domain IPs) |
+| `includedDomains` | Original domains, for clients that match by domain |
+
+The server pushes the policy; **the client applies it to its routing table**.
+The server data plane is unchanged — it simply NATs whatever the client sends.
+
+### Admin API
+
+- `GET /api/split` — view the effective policy (static routes + resolved IPs).
+- `POST /api/split` — replace it at runtime and re-resolve domains; takes effect
+  for subsequently-connecting clients. Body: `{ "enabled": bool, "routes": [..], "domains": [..] }`.
+
 ## Configuration
 
 All settings come from environment variables (see `.env.example`). Both the
