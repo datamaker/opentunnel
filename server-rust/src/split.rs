@@ -14,6 +14,12 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// A domain entry is a "pattern" (client-side hostname match only) if it
+/// contains a wildcard. CDN-backed domains should be configured this way.
+fn is_pattern(domain: &str) -> bool {
+    domain.contains('*')
+}
+
 struct Inner {
     enabled: bool,
     routes: Vec<String>,
@@ -77,17 +83,16 @@ impl SplitPolicy {
         self.refresh_once().await;
     }
 
-    /// Resolve every configured domain to its IPv4 addresses and store them as
-    /// `/32` routes. The DNS lookups run without holding the lock.
+    /// Resolve every configured *concrete* domain to its IPv4 addresses and
+    /// store them as `/32` routes. Wildcard/pattern entries (e.g.
+    /// `*.cacheby.com`) are skipped here — they cannot be resolved and are meant
+    /// for client-side hostname matching (CDN domains resolve to shared, rotating
+    /// IPs). The DNS lookups run without holding the lock.
     pub async fn refresh_once(&self) {
         let domains = self.inner.lock().unwrap().domains.clone();
-        if domains.is_empty() {
-            self.inner.lock().unwrap().resolved.clear();
-            return;
-        }
 
         let mut resolved: Vec<String> = Vec::new();
-        for domain in &domains {
+        for domain in domains.iter().filter(|d| !is_pattern(d)) {
             match tokio::net::lookup_host((domain.as_str(), 0u16)).await {
                 Ok(addrs) => {
                     for addr in addrs {
@@ -157,5 +162,16 @@ mod tests {
         // No domains -> refresh is a no-op that leaves only the static route.
         policy.refresh_once().await;
         assert_eq!(policy.snapshot().routes, vec!["1.2.3.0/24".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn wildcard_domains_are_not_resolved() {
+        // A pattern-only policy performs no DNS lookups; the wildcard is still
+        // advertised to clients for hostname matching.
+        let policy = SplitPolicy::new(&cfg(true, &["10.0.0.0/8"], &["*.cacheby.com"]));
+        policy.refresh_once().await;
+        let snap = policy.snapshot();
+        assert_eq!(snap.routes, vec!["10.0.0.0/8".to_string()]);
+        assert_eq!(snap.domains, vec!["*.cacheby.com".to_string()]);
     }
 }
