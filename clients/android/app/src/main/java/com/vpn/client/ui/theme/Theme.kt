@@ -125,7 +125,9 @@ private val DarkColorScheme = darkColorScheme(
 @Composable
 fun VpnClientTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    // Disabled so the app always uses the OpenTunnel blue brand palette
+    // (matching the iOS/macOS clients) instead of the device's Material You colors.
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {

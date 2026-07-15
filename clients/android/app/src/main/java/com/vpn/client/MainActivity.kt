@@ -13,19 +13,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.rememberNavController
 import com.vpn.client.service.MyVpnService
-import com.vpn.client.ui.screens.LoginScreen
-import com.vpn.client.ui.screens.MainScreen
-import com.vpn.client.ui.screens.SettingsScreen
+import com.vpn.client.ui.screens.VpnScreen
 import com.vpn.client.ui.theme.VpnClientTheme
 import com.vpn.client.viewmodel.VpnViewModel
 
@@ -73,6 +66,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Draw edge-to-edge so Compose receives IME (keyboard) insets and can lift the content
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+
         // Register broadcast receiver for VPN events
         val filter = IntentFilter().apply {
             addAction("com.vpn.client.VPN_CONNECTED")
@@ -87,54 +83,19 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            VpnClientTheme {
+            VpnClientTheme(darkTheme = true) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
+                    color = Color.Black
                 ) {
                     val viewModel: VpnViewModel = viewModel()
                     vpnViewModel = viewModel
 
-                    val navController = rememberNavController()
-                    val isLoggedIn by viewModel.isLoggedIn.collectAsState()
-
-                    NavHost(
-                        navController = navController,
-                        startDestination = if (isLoggedIn) "main" else "login"
-                    ) {
-                        composable("login") {
-                            LoginScreen(
-                                viewModel = viewModel,
-                                onLoginSuccess = {
-                                    navController.navigate("main") {
-                                        popUpTo("login") { inclusive = true }
-                                    }
-                                }
-                            )
-                        }
-
-                        composable("main") {
-                            MainScreen(
-                                viewModel = viewModel,
-                                onConnectClick = { requestVpnPermissionAndConnect() },
-                                onDisconnectClick = { stopVpnService() },
-                                onSettingsClick = { navController.navigate("settings") },
-                                onLogoutClick = {
-                                    viewModel.logout()
-                                    navController.navigate("login") {
-                                        popUpTo("main") { inclusive = true }
-                                    }
-                                }
-                            )
-                        }
-
-                        composable("settings") {
-                            SettingsScreen(
-                                viewModel = viewModel,
-                                onBackClick = { navController.popBackStack() }
-                            )
-                        }
-                    }
+                    VpnScreen(
+                        viewModel = viewModel,
+                        onConnectRequest = { requestVpnPermissionAndConnect() },
+                        onDisconnect = { stopVpnService() }
+                    )
                 }
             }
         }

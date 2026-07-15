@@ -204,6 +204,68 @@ class VPNViewModel: ObservableObject {
         defaults.removeObject(forKey: "vpn_remember_credentials")
     }
 
+    /// Authenticate and immediately start the tunnel in one step (single "Connect" tap,
+    /// matching the simple VPN Client screen on macOS/Android). Credentials are persisted.
+    func loginAndConnect(
+        username: String,
+        password: String,
+        serverAddress: String,
+        serverPort: Int
+    ) {
+        isAuthenticating = true
+        authError = nil
+        connectionError = nil
+
+        self.username = username
+        self.serverAddress = serverAddress
+        self.serverPort = serverPort
+
+        // Persist entered info so it is restored on next launch
+        let defaults = UserDefaults.standard
+        defaults.set(serverAddress, forKey: "vpn_server_address")
+        defaults.set(String(serverPort), forKey: "vpn_server_port")
+        defaults.set(true, forKey: "vpn_remember_credentials")
+        defaults.set(username, forKey: "vpn_username")
+        savePasswordToKeychain(password: password, username: username)
+
+        Task {
+            do {
+                try await vpnManager?.configureVPN(
+                    serverAddress: serverAddress,
+                    serverPort: serverPort,
+                    username: username,
+                    password: password
+                )
+                isAuthenticated = true
+                isAuthenticating = false
+
+                isConnecting = true
+                try await vpnManager?.connect()
+            } catch {
+                authError = error.localizedDescription
+                isAuthenticating = false
+                isConnecting = false
+            }
+        }
+    }
+
+    // MARK: - Saved value accessors (to pre-fill the form)
+    func savedServerHostPort() -> String {
+        let defaults = UserDefaults.standard
+        let host = defaults.string(forKey: "vpn_server_address") ?? ""
+        let port = defaults.string(forKey: "vpn_server_port") ?? ""
+        if host.isEmpty { return "" }
+        return port.isEmpty ? host : "\(host):\(port)"
+    }
+
+    func savedUsername() -> String {
+        UserDefaults.standard.string(forKey: "vpn_username") ?? ""
+    }
+
+    func savedPassword() -> String {
+        loadPasswordFromKeychain(username: savedUsername()) ?? ""
+    }
+
     // MARK: - Connection Methods
     func connect() {
         guard !isConnecting else { return }
