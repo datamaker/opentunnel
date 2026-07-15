@@ -151,7 +151,10 @@ public static class VpnSerializer
             SubnetMask = configPush.SubnetMask,
             Gateway = configPush.Gateway,
             Dns = configPush.Dns,
-            Mtu = configPush.Mtu
+            Mtu = configPush.Mtu,
+            SplitTunnel = configPush.SplitTunnel,
+            IncludedRoutes = configPush.IncludedRoutes,
+            IncludedDomains = configPush.IncludedDomains
         };
     }
 

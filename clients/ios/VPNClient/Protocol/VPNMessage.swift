@@ -110,6 +110,10 @@ struct ConfigPush: VPNMessageProtocol, Codable {
     let gateway: String
     let dns: [String]
     let mtu: Int
+    // Split-tunnel policy (optional for backward compatibility with older servers).
+    let splitTunnel: Bool?
+    let includedRoutes: [String]?
+    let includedDomains: [String]?
 
     enum CodingKeys: String, CodingKey {
         case assignedIP
@@ -117,14 +121,29 @@ struct ConfigPush: VPNMessageProtocol, Codable {
         case gateway
         case dns
         case mtu
+        case splitTunnel
+        case includedRoutes
+        case includedDomains
     }
 
-    init(assignedIP: String, subnetMask: String, gateway: String, dns: [String], mtu: Int = 1400) {
+    init(
+        assignedIP: String,
+        subnetMask: String,
+        gateway: String,
+        dns: [String],
+        mtu: Int = 1400,
+        splitTunnel: Bool? = nil,
+        includedRoutes: [String]? = nil,
+        includedDomains: [String]? = nil
+    ) {
         self.assignedIP = assignedIP
         self.subnetMask = subnetMask
         self.gateway = gateway
         self.dns = dns
         self.mtu = mtu
+        self.splitTunnel = splitTunnel
+        self.includedRoutes = includedRoutes
+        self.includedDomains = includedDomains
     }
 
     func encode() throws -> Data {

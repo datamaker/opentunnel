@@ -37,6 +37,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private var dnsServers: [String] = []
     private var mtu: Int = 1400
 
+    // Split tunneling (destination-based routing)
+    private var splitTunnel: Bool = false
+    private var includedRoutes: [String] = []
+    private var includedDomains: [String] = []
+    private var domainMatcher: DomainMatcher?
+    private var dynamicRoutes: Set<String> = []
+
     // App group for sharing data with main app
     private let appGroupIdentifier = "group.com.vpnclient.ios"
 
@@ -147,33 +154,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         NSLog("[PacketTunnel] DNS: \(dnsServers)")
         NSLog("[PacketTunnel] MTU: \(mtu)")
 
-        // Create tunnel network settings
-        let tunnelSettings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: serverAddress)
-
-        // Configure IPv4 settings
-        let ipv4Settings = NEIPv4Settings(addresses: [assignedIP], subnetMasks: [subnetMask])
-
-        // Add included routes (route all traffic through VPN)
-        let defaultRoute = NEIPv4Route.default()
-        defaultRoute.gatewayAddress = gateway
-        ipv4Settings.includedRoutes = [defaultRoute]
-
-        // Exclude VPN server address from routing through tunnel
-        let serverRoute = NEIPv4Route(destinationAddress: serverAddress, subnetMask: "255.255.255.255")
-        ipv4Settings.excludedRoutes = [serverRoute]
-
-        tunnelSettings.ipv4Settings = ipv4Settings
-
-        // Configure DNS settings
-        let dnsSettings = NEDNSSettings(servers: dnsServers)
-        dnsSettings.matchDomains = [""]  // Match all domains
-        tunnelSettings.dnsSettings = dnsSettings
-
-        // Set MTU
-        tunnelSettings.mtu = NSNumber(value: mtu)
-
         // Apply settings
-        setTunnelNetworkSettings(tunnelSettings) { [weak self] error in
+        setTunnelNetworkSettings(makeTunnelSettings()) { [weak self] error in
             if let error = error {
                 NSLog("[PacketTunnel] Failed to set tunnel settings: \(error.localizedDescription)")
                 self?.pendingStartCompletion?(error)
@@ -191,6 +173,63 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             // Complete tunnel start
             self?.pendingStartCompletion?(nil)
             self?.pendingStartCompletion = nil
+        }
+    }
+
+    /// Build the tunnel settings, honoring split-tunnel policy.
+    private func makeTunnelSettings() -> NEPacketTunnelNetworkSettings {
+        let tunnelSettings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: serverAddress)
+        let ipv4Settings = NEIPv4Settings(addresses: [assignedIP], subnetMasks: [subnetMask])
+
+        if splitTunnel {
+            // Route only the included destinations through the tunnel.
+            ipv4Settings.includedRoutes = buildSplitRoutes()
+        } else {
+            let defaultRoute = NEIPv4Route.default()
+            defaultRoute.gatewayAddress = gateway
+            ipv4Settings.includedRoutes = [defaultRoute]
+        }
+
+        // Always keep the VPN server itself off the tunnel to avoid loops.
+        let serverRoute = NEIPv4Route(destinationAddress: serverAddress, subnetMask: "255.255.255.255")
+        ipv4Settings.excludedRoutes = [serverRoute]
+        tunnelSettings.ipv4Settings = ipv4Settings
+
+        // Route DNS through the tunnel resolver so answers are observable for
+        // domain-based rules (needed for CDN hostname matching).
+        let dnsSettings = NEDNSSettings(servers: dnsServers)
+        dnsSettings.matchDomains = [""]
+        tunnelSettings.dnsSettings = dnsSettings
+        tunnelSettings.mtu = NSNumber(value: mtu)
+        return tunnelSettings
+    }
+
+    private func buildSplitRoutes() -> [NEIPv4Route] {
+        var routes: [NEIPv4Route] = []
+        for cidr in includedRoutes {
+            if let c = CidrUtils.parse(cidr) {
+                routes.append(NEIPv4Route(destinationAddress: c.address,
+                                          subnetMask: CidrUtils.mask(forPrefix: c.prefix)))
+            }
+        }
+        if let matcher = domainMatcher, !matcher.isEmpty {
+            for dns in dnsServers where CidrUtils.parse(dns) != nil {
+                routes.append(NEIPv4Route(destinationAddress: dns, subnetMask: "255.255.255.255"))
+            }
+            for ip in dynamicRoutes {
+                routes.append(NEIPv4Route(destinationAddress: ip, subnetMask: "255.255.255.255"))
+            }
+        }
+        NSLog("[PacketTunnel] Split tunnel: \(routes.count) route(s), \(includedDomains.count) domain rule(s)")
+        return routes
+    }
+
+    /// Re-apply tunnel settings after learning new split routes (no timer/reader restart).
+    private func reapplyTunnelSettings() {
+        setTunnelNetworkSettings(makeTunnelSettings()) { error in
+            if let error = error {
+                NSLog("[PacketTunnel] Failed to re-apply split routes: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -229,6 +268,19 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         // Write packet to the virtual interface
         packetFlow.writePackets([packet], withProtocols: [NSNumber(value: AF_INET)])
         bytesReceived += UInt64(packet.count)
+        maybeLearnRoute(packet)
+    }
+
+    /// Split tunneling: snoop DNS answers for matched domains and route the exact
+    /// IPs the client resolved (handles CDN domains by hostname).
+    private func maybeLearnRoute(_ packet: Data) {
+        guard splitTunnel, let matcher = domainMatcher, !matcher.isEmpty else { return }
+        guard let dns = DnsSniffer.parse(packet), matcher.matches(dns.qname) else { return }
+        let added = dns.addresses.filter { dynamicRoutes.insert($0).inserted }
+        if !added.isEmpty {
+            NSLog("[PacketTunnel] Split tunnel: learned \(added.count) route(s) for \(dns.qname)")
+            reapplyTunnelSettings()
+        }
     }
 
     // MARK: - Message Handling
@@ -275,6 +327,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         gateway = config.gateway
         dnsServers = config.dns
         mtu = config.mtu
+
+        splitTunnel = config.splitTunnel ?? false
+        includedRoutes = config.includedRoutes ?? []
+        includedDomains = config.includedDomains ?? []
+        domainMatcher = (splitTunnel && !includedDomains.isEmpty) ? DomainMatcher(includedDomains) : nil
+        dynamicRoutes = []
 
         configureTunnel()
     }

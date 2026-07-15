@@ -21,6 +21,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private var tunnelConfig: ConfigPush?
     private var sessionToken: String?
 
+    // Split tunneling (destination-based routing)
+    private var domainMatcher: DomainMatcher?
+    private var dynamicRoutes: Set<String> = []
+
     private var isRunning = false
     private let packetQueue = DispatchQueue(label: "com.vpnclient.packetQueue", qos: .userInteractive)
 
@@ -154,32 +158,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private func configureTunnel(with config: ConfigPush) {
         logger.info("Configuring tunnel with IP: \(config.assignedIP)")
 
-        let networkSettings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: config.gateway)
+        tunnelConfig = config
+        let splitOn = config.splitTunnel ?? false
+        let domains = config.includedDomains ?? []
+        domainMatcher = (splitOn && !domains.isEmpty) ? DomainMatcher(domains) : nil
+        dynamicRoutes = []
 
-        // Configure IPv4
-        let ipv4Settings = NEIPv4Settings(addresses: [config.assignedIP], subnetMasks: [config.subnetMask])
-
-        // Include all routes (full tunnel)
-        ipv4Settings.includedRoutes = [NEIPv4Route.default()]
-
-        // Exclude local network routes
-        let excludedRoutes: [NEIPv4Route] = [
-            NEIPv4Route(destinationAddress: "10.0.0.0", subnetMask: "255.0.0.0"),
-            NEIPv4Route(destinationAddress: "172.16.0.0", subnetMask: "255.240.0.0"),
-            NEIPv4Route(destinationAddress: "192.168.0.0", subnetMask: "255.255.0.0"),
-            NEIPv4Route(destinationAddress: "127.0.0.0", subnetMask: "255.0.0.0")
-        ]
-        ipv4Settings.excludedRoutes = excludedRoutes
-
-        networkSettings.ipv4Settings = ipv4Settings
-
-        // Configure DNS
-        let dnsSettings = NEDNSSettings(servers: config.dns)
-        dnsSettings.matchDomains = [""]  // Match all domains
-        networkSettings.dnsSettings = dnsSettings
-
-        // Configure MTU
-        networkSettings.mtu = NSNumber(value: config.mtu)
+        let networkSettings = makeNetworkSettings(for: config)
 
         // Apply settings
         setTunnelNetworkSettings(networkSettings) { [weak self] error in
@@ -205,6 +190,75 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             // Complete startup
             self.pendingStartCompletion?(nil)
             self.pendingStartCompletion = nil
+        }
+    }
+
+    /// Build tunnel settings, honoring split-tunnel policy.
+    private func makeNetworkSettings(for config: ConfigPush) -> NEPacketTunnelNetworkSettings {
+        let networkSettings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: config.gateway)
+        let ipv4Settings = NEIPv4Settings(addresses: [config.assignedIP], subnetMasks: [config.subnetMask])
+
+        if config.splitTunnel ?? false {
+            ipv4Settings.includedRoutes = buildSplitRoutes(config)
+        } else {
+            ipv4Settings.includedRoutes = [NEIPv4Route.default()]
+            // Exclude local network routes in full-tunnel mode.
+            ipv4Settings.excludedRoutes = [
+                NEIPv4Route(destinationAddress: "10.0.0.0", subnetMask: "255.0.0.0"),
+                NEIPv4Route(destinationAddress: "172.16.0.0", subnetMask: "255.240.0.0"),
+                NEIPv4Route(destinationAddress: "192.168.0.0", subnetMask: "255.255.0.0"),
+                NEIPv4Route(destinationAddress: "127.0.0.0", subnetMask: "255.0.0.0")
+            ]
+        }
+
+        networkSettings.ipv4Settings = ipv4Settings
+
+        let dnsSettings = NEDNSSettings(servers: config.dns)
+        dnsSettings.matchDomains = [""] // route DNS through tunnel so answers are observable
+        networkSettings.dnsSettings = dnsSettings
+        networkSettings.mtu = NSNumber(value: config.mtu)
+        return networkSettings
+    }
+
+    private func buildSplitRoutes(_ config: ConfigPush) -> [NEIPv4Route] {
+        var routes: [NEIPv4Route] = []
+        for cidr in config.includedRoutes ?? [] {
+            if let c = CidrUtils.parse(cidr) {
+                routes.append(NEIPv4Route(destinationAddress: c.address,
+                                          subnetMask: CidrUtils.mask(forPrefix: c.prefix)))
+            }
+        }
+        if let matcher = domainMatcher, !matcher.isEmpty {
+            for dns in config.dns where CidrUtils.parse(dns) != nil {
+                routes.append(NEIPv4Route(destinationAddress: dns, subnetMask: "255.255.255.255"))
+            }
+            for ip in dynamicRoutes {
+                routes.append(NEIPv4Route(destinationAddress: ip, subnetMask: "255.255.255.255"))
+            }
+        }
+        logger.info("Split tunnel: \(routes.count) route(s), \((config.includedDomains ?? []).count) domain rule(s)")
+        return routes
+    }
+
+    /// Re-apply settings after learning new split routes (no reader/keepalive restart).
+    private func reapplyRoutes() {
+        guard let config = tunnelConfig else { return }
+        setTunnelNetworkSettings(makeNetworkSettings(for: config)) { [weak self] error in
+            if let error = error {
+                self?.logger.error("Failed to re-apply split routes: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Snoop DNS answers for matched domains and route the exact IPs the client
+    /// resolved (handles CDN domains by hostname).
+    private func maybeLearnRoute(_ packet: Data) {
+        guard let matcher = domainMatcher, !matcher.isEmpty else { return }
+        guard let dns = DnsSniffer.parse(packet), matcher.matches(dns.qname) else { return }
+        let added = dns.addresses.filter { dynamicRoutes.insert($0).inserted }
+        if !added.isEmpty {
+            logger.info("Split tunnel: learned \(added.count) route(s) for \(dns.qname)")
+            reapplyRoutes()
         }
     }
 
@@ -257,6 +311,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
         // Write packet to tunnel
         packetFlow.writePackets([data], withProtocols: [protocolNumber])
+
+        if version == 4 {
+            maybeLearnRoute(data)
+        }
     }
 
     // MARK: - Keep Alive

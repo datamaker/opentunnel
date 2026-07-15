@@ -2,6 +2,7 @@ using System.Net;
 using Microsoft.Extensions.Logging;
 using VPNClient.Network;
 using VPNClient.Protocol;
+using VPNClient.Split;
 using VPNClient.ViewModels;
 
 namespace VPNClient.Services;
@@ -24,6 +25,10 @@ public class VpnTunnel : IDisposable
     private string? _sessionToken;
     private bool _isDisposed;
     private readonly object _stateLock = new();
+
+    // Split tunneling: hostname matcher for domain rules and IPs learned via DNS.
+    private DomainMatcher? _domainMatcher;
+    private readonly HashSet<string> _dynamicRoutes = new();
 
     private long _bytesReceived;
     private long _bytesSent;
@@ -108,6 +113,12 @@ public class VpnTunnel : IDisposable
                 _config.Gateway!,
                 _config.Dns ?? new[] { "8.8.8.8", "8.8.4.4" },
                 _config.Mtu);
+
+            // Split tunneling: install routes only for the included destinations.
+            if (_config.SplitTunnel)
+            {
+                await ConfigureSplitRoutesAsync();
+            }
 
             // Step 5: Start packet forwarding
             _logger.LogInformation("Starting packet forwarding");
@@ -212,6 +223,76 @@ public class VpnTunnel : IDisposable
         IsConnected = false;
     }
 
+    /// <summary>
+    /// Install split-tunnel routes: the server-provided include list plus DNS
+    /// servers (so their answers are observable for domain-based rules).
+    /// </summary>
+    private async Task ConfigureSplitRoutesAsync()
+    {
+        if (_config == null) return;
+
+        var domains = _config.IncludedDomains ?? Array.Empty<string>();
+        _domainMatcher = domains.Length > 0 ? new DomainMatcher(domains) : null;
+        lock (_dynamicRoutes) _dynamicRoutes.Clear();
+
+        var count = 0;
+        foreach (var cidr in _config.IncludedRoutes ?? Array.Empty<string>())
+        {
+            var c = CidrUtils.Parse(cidr);
+            if (c != null)
+            {
+                await _wintunAdapter.AddRouteAsync(c.Address, c.Prefix);
+                count++;
+            }
+        }
+
+        if (_domainMatcher != null && !_domainMatcher.IsEmpty)
+        {
+            foreach (var dns in _config.Dns ?? Array.Empty<string>())
+            {
+                if (CidrUtils.Parse(dns) != null)
+                {
+                    await _wintunAdapter.AddRouteAsync(dns, 32);
+                }
+            }
+        }
+
+        _logger.LogInformation("Split tunnel: {Count} route(s), {Domains} domain rule(s)",
+            count, domains.Length);
+    }
+
+    /// <summary>
+    /// Snoop DNS answers for matched domains and route the exact IPs the client
+    /// resolved (handles CDN domains by hostname). Fire-and-forget route adds.
+    /// </summary>
+    private void MaybeLearnRoute(byte[] packet)
+    {
+        var matcher = _domainMatcher;
+        if (matcher == null || matcher.IsEmpty) return;
+
+        var dns = DnsSniffer.Parse(packet);
+        if (dns == null || !matcher.Matches(dns.QName)) return;
+
+        var added = new List<string>();
+        lock (_dynamicRoutes)
+        {
+            foreach (var ip in dns.Addresses)
+            {
+                if (_dynamicRoutes.Add(ip)) added.Add(ip);
+            }
+        }
+
+        if (added.Count > 0)
+        {
+            _logger.LogInformation("Split tunnel: learned {Count} route(s) for {Domain}",
+                added.Count, dns.QName);
+            foreach (var ip in added)
+            {
+                _ = _wintunAdapter.AddRouteAsync(ip, 32);
+            }
+        }
+    }
+
     private void StartPacketForwarding(CancellationToken cancellationToken)
     {
         // Task to receive packets from TLS and send to TUN
@@ -236,6 +317,7 @@ public class VpnTunnel : IDisposable
                             await _wintunAdapter.WritePacketAsync(message.Payload);
                             Interlocked.Add(ref _bytesReceived, message.Payload.Length);
                             Interlocked.Increment(ref _packetsReceived);
+                            MaybeLearnRoute(message.Payload);
                             break;
 
                         case MessageType.KeepaliveAck:
@@ -427,6 +509,9 @@ public class VpnConfig
     public string? Gateway { get; set; }
     public string[]? Dns { get; set; }
     public int Mtu { get; set; } = 1400;
+    public bool SplitTunnel { get; set; } = false;
+    public string[]? IncludedRoutes { get; set; }
+    public string[]? IncludedDomains { get; set; }
 }
 
 /// <summary>

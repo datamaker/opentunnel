@@ -146,4 +146,13 @@ public class ConfigPush
     /// Maximum transmission unit size
     /// </summary>
     public int Mtu { get; set; } = 1400;
+
+    /// <summary>When true, route only IncludedRoutes/IncludedDomains through the VPN.</summary>
+    public bool SplitTunnel { get; set; } = false;
+
+    /// <summary>IP CIDRs to route through the tunnel (static + server-resolved domain IPs).</summary>
+    public string[]? IncludedRoutes { get; set; }
+
+    /// <summary>Domains to route through the tunnel, matched by hostname on the client.</summary>
+    public string[]? IncludedDomains { get; set; }
 }
