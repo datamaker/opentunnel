@@ -341,19 +341,16 @@ extension TLSConnection {
 
         let secProtocol = metadata.securityProtocolMetadata
 
-        if let version = sec_protocol_metadata_get_negotiated_tls_protocol_version(secProtocol) {
-            switch version {
-            case .TLSv10: return "TLS 1.0"
-            case .TLSv11: return "TLS 1.1"
-            case .TLSv12: return "TLS 1.2"
-            case .TLSv13: return "TLS 1.3"
-            case .DTLSv10: return "DTLS 1.0"
-            case .DTLSv12: return "DTLS 1.2"
-            @unknown default: return "Unknown"
-            }
+        let version = sec_protocol_metadata_get_negotiated_tls_protocol_version(secProtocol)
+        switch version {
+        case .TLSv10: return "TLS 1.0"
+        case .TLSv11: return "TLS 1.1"
+        case .TLSv12: return "TLS 1.2"
+        case .TLSv13: return "TLS 1.3"
+        case .DTLSv10: return "DTLS 1.0"
+        case .DTLSv12: return "DTLS 1.2"
+        @unknown default: return "Unknown"
         }
-
-        return "Unknown"
     }
 
     /// Get negotiated cipher suite
@@ -364,10 +361,7 @@ extension TLSConnection {
 
         let secProtocol = metadata.securityProtocolMetadata
 
-        if let ciphersuite = sec_protocol_metadata_get_negotiated_tls_ciphersuite(secProtocol) {
-            return String(describing: ciphersuite)
-        }
-
-        return "Unknown"
+        let ciphersuite = sec_protocol_metadata_get_negotiated_tls_ciphersuite(secProtocol)
+        return String(describing: ciphersuite)
     }
 }

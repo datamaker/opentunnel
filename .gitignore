@@ -61,3 +61,6 @@ coverage/
 # Provisioning profiles
 *.provisionprofile
 *.mobileprovision
+
+# Xcode user-specific state
+xcuserdata/
