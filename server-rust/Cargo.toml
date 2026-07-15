@@ -1,0 +1,52 @@
+[package]
+name = "opentunnel-server"
+version = "1.0.0"
+edition = "2021"
+description = "OpenTunnel VPN Server (Rust)"
+license = "MIT"
+
+[[bin]]
+name = "opentunnel-server"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+# Pin the `ring` crypto provider to avoid the aws-lc-rs C/cmake build.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pemfile = "2"
+
+# Database
+tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-chrono-0_4"] }
+deadpool-postgres = "0.14"
+
+# Auth
+bcrypt = "0.15"
+jsonwebtoken = "9"
+
+# Admin HTTP server
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.5", features = ["fs", "cors"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+thiserror = "1"
+dotenvy = "0.15"
+bytes = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
