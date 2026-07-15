@@ -30,7 +30,8 @@ LABEL version="1.0.0"
 
 WORKDIR /app
 
-# Runtime dependencies, including Python 3 for the TUN bridge.
+# Runtime dependencies. The TUN device is handled natively in the binary, so no
+# Python is needed; `ip`/`iptables` come from iproute2/iptables.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     iptables \
@@ -39,7 +40,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     curl \
     ca-certificates \
-    python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the compiled binary.
@@ -47,7 +47,6 @@ COPY --from=builder /app/target/release/opentunnel-server /usr/local/bin/opentun
 
 # Copy runtime assets.
 COPY public ./public
-COPY tun-bridge.py ./
 COPY docker-entrypoint.sh /usr/local/bin/
 
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \

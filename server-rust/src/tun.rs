@@ -1,18 +1,13 @@
 //! TUN device abstraction.
 //!
-//! Mirrors `tun/tunDevice.ts`: on Linux we reuse the existing `tun-bridge.py`
-//! helper, exchanging length-prefixed packets over a Unix domain socket. A mock
-//! device is used in development so the server runs without root or `/dev/net/tun`.
+//! On Linux the device is driven natively in pure Rust: we open `/dev/net/tun`,
+//! configure it with the `TUNSETIFF` ioctl, and pump packets over the raw file
+//! descriptor using Tokio's [`AsyncFd`]. A mock device is used in development so
+//! the server runs without root or `/dev/net/tun`.
 
 use anyhow::Context;
 use std::process::Stdio;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
-use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
-
-const SOCKET_PATH: &str = "/tmp/vpn-tun.sock";
-const BRIDGE_PATH: &str = "/app/tun-bridge.py";
 
 /// Handle used to write packets toward the TUN device.
 #[derive(Clone)]
@@ -40,7 +35,7 @@ pub async fn start(
     if mock {
         start_mock().await
     } else {
-        start_linux(name, mtu, gateway_cidr).await
+        start_native(name, mtu, gateway_cidr).await
     }
 }
 
@@ -61,96 +56,22 @@ async fn start_mock() -> anyhow::Result<(TunHandle, mpsc::Receiver<Vec<u8>>)> {
     Ok((TunHandle { tx: write_tx }, in_rx))
 }
 
-/// Linux device: bring up the interface, spawn `tun-bridge.py`, and pump packets
-/// over its Unix socket.
-async fn start_linux(
+#[cfg(target_os = "linux")]
+async fn start_native(
     name: &str,
     mtu: u32,
     gateway_cidr: &str,
 ) -> anyhow::Result<(TunHandle, mpsc::Receiver<Vec<u8>>)> {
-    // Create the interface (idempotent) and set the MTU.
-    run_ip(&["tuntap", "add", "dev", name, "mode", "tun"]).ok();
-    run_ip(&["link", "set", name, "mtu", &mtu.to_string()])
-        .context("failed to set TUN mtu")?;
-
-    // Assign the gateway address and bring the interface up. Best-effort NAT
-    // rules mirror `tunDevice.ts`; the container entrypoint also configures
-    // these, so failures here are non-fatal.
-    run_ip(&["addr", "add", gateway_cidr, "dev", name]).ok();
-    run_ip(&["link", "set", name, "up"]).ok();
-    setup_nat(gateway_cidr, name);
-
-    // Launch the Python bridge that owns the /dev/net/tun fd.
-    let mut bridge: Child = Command::new("python3")
-        .arg(BRIDGE_PATH)
-        .arg(name)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("failed to spawn tun-bridge.py")?;
-
-    // Give the bridge a moment to create the socket, then connect.
-    let stream = connect_with_retry(SOCKET_PATH, 20).await?;
-    let (mut reader, mut writer) = stream.into_split();
-
-    let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(1024);
-    let (in_tx, in_rx) = mpsc::channel::<Vec<u8>>(1024);
-
-    // Writer task: frame outbound packets with a 4-byte length prefix.
-    tokio::spawn(async move {
-        while let Some(pkt) = write_rx.recv().await {
-            let mut framed = Vec::with_capacity(4 + pkt.len());
-            framed.extend_from_slice(&(pkt.len() as u32).to_be_bytes());
-            framed.extend_from_slice(&pkt);
-            if writer.write_all(&framed).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    // Reader task: parse length-prefixed packets coming from the bridge.
-    tokio::spawn(async move {
-        let mut buf = Vec::new();
-        let mut chunk = [0u8; 65536];
-        loop {
-            match reader.read(&mut chunk).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            }
-            while buf.len() >= 4 {
-                let len =
-                    u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-                if buf.len() < 4 + len {
-                    break;
-                }
-                let packet = buf[4..4 + len].to_vec();
-                buf.drain(..4 + len);
-                if in_tx.send(packet).await.is_err() {
-                    return;
-                }
-            }
-        }
-    });
-
-    // Reap the bridge process if it exits.
-    tokio::spawn(async move {
-        let status = bridge.wait().await;
-        tracing::warn!("tun-bridge.py exited: {:?}", status);
-    });
-
-    tracing::info!("Linux TUN device {name} created via Python bridge");
-    Ok((TunHandle { tx: write_tx }, in_rx))
+    linux::start(name, mtu, gateway_cidr).await
 }
 
-async fn connect_with_retry(path: &str, attempts: u32) -> anyhow::Result<UnixStream> {
-    for i in 0..attempts {
-        match UnixStream::connect(path).await {
-            Ok(s) => return Ok(s),
-            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
-        }
-        tracing::debug!("waiting for TUN bridge socket ({}/{attempts})", i + 1);
-    }
-    anyhow::bail!("timed out connecting to TUN bridge socket at {path}")
+#[cfg(not(target_os = "linux"))]
+async fn start_native(
+    _name: &str,
+    _mtu: u32,
+    _gateway_cidr: &str,
+) -> anyhow::Result<(TunHandle, mpsc::Receiver<Vec<u8>>)> {
+    anyhow::bail!("native TUN device is only supported on Linux; set NODE_ENV != production to use the mock device")
 }
 
 /// Best-effort NAT/forwarding setup (requires NET_ADMIN). Derives the subnet
@@ -188,4 +109,195 @@ fn run_ip(args: &[&str]) -> anyhow::Result<()> {
         anyhow::bail!("`ip {}` failed", args.join(" "));
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use super::{run_ip, setup_nat, TunHandle};
+    use anyhow::Context;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+    use tokio::io::unix::AsyncFd;
+    use tokio::sync::mpsc;
+
+    // ioctl request for setting TUN/TAP interface flags (Linux <linux/if_tun.h>).
+    const TUNSETIFF: libc::c_ulong = 0x4004_54ca;
+    const MAX_PACKET: usize = 65536;
+
+    /// Owned TUN file descriptor with an `AsRawFd` impl for `AsyncFd`.
+    struct TunFd(OwnedFd);
+
+    impl AsRawFd for TunFd {
+        fn as_raw_fd(&self) -> RawFd {
+            self.0.as_raw_fd()
+        }
+    }
+
+    /// `struct ifreq` big enough for the interface name + flags (40 bytes on
+    /// 64-bit Linux). We only touch the name and the leading flags field.
+    #[repr(C)]
+    struct Ifreq {
+        name: [libc::c_char; libc::IFNAMSIZ],
+        flags: libc::c_short,
+        _pad: [u8; 22],
+    }
+
+    fn open_tun(name: &str) -> anyhow::Result<OwnedFd> {
+        // Open the clone device.
+        let fd = unsafe {
+            libc::open(
+                b"/dev/net/tun\0".as_ptr() as *const libc::c_char,
+                libc::O_RDWR,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error()).context("open /dev/net/tun");
+        }
+        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+
+        // Build the ifreq and request a TUN device with no packet-info header.
+        let mut ifr = Ifreq {
+            name: [0; libc::IFNAMSIZ],
+            flags: (libc::IFF_TUN | libc::IFF_NO_PI) as libc::c_short,
+            _pad: [0; 22],
+        };
+        let bytes = name.as_bytes();
+        anyhow::ensure!(bytes.len() < libc::IFNAMSIZ, "interface name too long");
+        for (dst, &b) in ifr.name.iter_mut().zip(bytes) {
+            *dst = b as libc::c_char;
+        }
+
+        let rc = unsafe { libc::ioctl(owned.as_raw_fd(), TUNSETIFF, &mut ifr) };
+        if rc < 0 {
+            return Err(std::io::Error::last_os_error()).context("ioctl TUNSETIFF");
+        }
+
+        set_nonblocking(owned.as_raw_fd())?;
+        Ok(owned)
+    }
+
+    fn set_nonblocking(fd: RawFd) -> anyhow::Result<()> {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(std::io::Error::last_os_error()).context("fcntl F_GETFL");
+        }
+        let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        if rc < 0 {
+            return Err(std::io::Error::last_os_error()).context("fcntl F_SETFL O_NONBLOCK");
+        }
+        Ok(())
+    }
+
+    pub async fn start(
+        name: &str,
+        mtu: u32,
+        gateway_cidr: &str,
+    ) -> anyhow::Result<(TunHandle, mpsc::Receiver<Vec<u8>>)> {
+        let fd = open_tun(name).context("failed to open TUN device")?;
+
+        // Bring the interface up, set MTU, assign the gateway, configure NAT.
+        run_ip(&["link", "set", name, "mtu", &mtu.to_string()])
+            .context("failed to set TUN mtu")?;
+        run_ip(&["addr", "add", gateway_cidr, "dev", name]).ok();
+        run_ip(&["link", "set", name, "up"]).context("failed to bring TUN up")?;
+        setup_nat(gateway_cidr, name);
+
+        let async_fd = std::sync::Arc::new(AsyncFd::new(TunFd(fd)).context("register TUN fd")?);
+
+        let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>(1024);
+        let (in_tx, in_rx) = mpsc::channel::<Vec<u8>>(1024);
+
+        spawn_reader(async_fd.clone(), in_tx);
+        spawn_writer(async_fd, write_rx);
+
+        tracing::info!("Native Linux TUN device {name} created");
+        Ok((TunHandle { tx: write_tx }, in_rx))
+    }
+
+    /// Read packets from the TUN fd and forward them to the router.
+    fn spawn_reader(async_fd: std::sync::Arc<AsyncFd<TunFd>>, in_tx: mpsc::Sender<Vec<u8>>) {
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; MAX_PACKET];
+            loop {
+                let mut guard = match async_fd.readable().await {
+                    Ok(g) => g,
+                    Err(e) => {
+                        tracing::error!("TUN readable error: {e}");
+                        break;
+                    }
+                };
+                let result = guard.try_io(|inner| {
+                    let n = unsafe {
+                        libc::read(
+                            inner.as_raw_fd(),
+                            buf.as_mut_ptr() as *mut libc::c_void,
+                            buf.len(),
+                        )
+                    };
+                    if n < 0 {
+                        Err(std::io::Error::last_os_error())
+                    } else {
+                        Ok(n as usize)
+                    }
+                });
+
+                match result {
+                    Ok(Ok(0)) => break,
+                    Ok(Ok(n)) => {
+                        if in_tx.send(buf[..n].to_vec()).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        tracing::error!("TUN read error: {e}");
+                        break;
+                    }
+                    // Spurious readiness; re-arm and wait again.
+                    Err(_would_block) => continue,
+                }
+            }
+            tracing::warn!("TUN reader stopped");
+        });
+    }
+
+    /// Write outbound packets from the connection loop to the TUN fd.
+    fn spawn_writer(async_fd: std::sync::Arc<AsyncFd<TunFd>>, mut write_rx: mpsc::Receiver<Vec<u8>>) {
+        tokio::spawn(async move {
+            while let Some(pkt) = write_rx.recv().await {
+                let mut written = 0;
+                while written < pkt.len() {
+                    let mut guard = match async_fd.writable().await {
+                        Ok(g) => g,
+                        Err(e) => {
+                            tracing::error!("TUN writable error: {e}");
+                            return;
+                        }
+                    };
+                    let result = guard.try_io(|inner| {
+                        let n = unsafe {
+                            libc::write(
+                                inner.as_raw_fd(),
+                                pkt[written..].as_ptr() as *const libc::c_void,
+                                pkt.len() - written,
+                            )
+                        };
+                        if n < 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(n as usize)
+                        }
+                    });
+
+                    match result {
+                        Ok(Ok(n)) => written += n,
+                        Ok(Err(e)) => {
+                            tracing::error!("TUN write error: {e}");
+                            break;
+                        }
+                        Err(_would_block) => continue,
+                    }
+                }
+            }
+            tracing::warn!("TUN writer stopped");
+        });
+    }
 }

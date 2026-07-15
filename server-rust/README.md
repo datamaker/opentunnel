@@ -23,7 +23,7 @@ deployments keep working unchanged.
 | IP address pool | `src/ippool.rs` | `routing/ipPool.ts` |
 | Connection state machine | `src/session/connection.rs` | `session/vpnSession.ts` |
 | Session registry / routing | `src/session/manager.rs` | `session/sessionManager.ts` |
-| TUN device (Python bridge) | `src/tun.rs` | `tun/tunDevice.ts` |
+| TUN device (native, pure Rust) | `src/tun.rs` | `tun/tunDevice.ts` |
 | Packet router | `src/router.rs` | `routing/packetRouter.ts` |
 | Admin HTTP API + UI | `src/admin.rs` | `admin/adminServer.ts` |
 
@@ -37,8 +37,13 @@ from the Node.js server's later fixes are included.
 
 ### Data plane
 
-- **client → internet**: `DATA_PACKET` frames are written to the TUN device via
-  the Python bridge (`tun-bridge.py`) over a Unix socket.
+The TUN device is driven **natively in pure Rust** — `src/tun.rs` opens
+`/dev/net/tun`, configures it with the `TUNSETIFF` ioctl (via `libc`), and does
+async reads/writes on the raw fd with Tokio's `AsyncFd`. No Python helper is
+involved. (`ip`/`iptables` are still shelled out for interface/NAT setup, as in
+the original server.)
+
+- **client → internet**: `DATA_PACKET` frames are written directly to the TUN fd.
 - **internet → client**: packets read from TUN are routed to the owning session
   by destination IP and framed back to the client.
 
@@ -72,8 +77,8 @@ The VPN listener defaults to `:1194` and the admin panel to `:8080`.
 docker build -t datamaker/opentunnel-rust:latest .
 ```
 
-The image is self-contained (binary + `tun-bridge.py` + admin UI) and drops in
-against the existing `docker-compose.yml` / PostgreSQL setup. Requires
+The image is self-contained (binary + admin UI, no Python) and drops in against
+the existing `docker-compose.yml` / PostgreSQL setup. Requires
 `--cap-add NET_ADMIN` and `--device /dev/net/tun` for the real data plane.
 
 ## Configuration
@@ -85,7 +90,6 @@ accepted for compatibility.
 ## Status
 
 Initial port. Control plane (TLS, auth, config push, keepalive, session
-lifecycle, DB persistence), the admin API, and internet→client routing are
+lifecycle, DB persistence), the admin API, and bidirectional packet routing are
 implemented and covered by an end-to-end test against a live PostgreSQL. The
-Linux data plane reuses the existing Python TUN bridge; a native pure-Rust TUN
-implementation is a planned follow-up.
+Linux data plane uses a native, pure-Rust TUN device (no Python).

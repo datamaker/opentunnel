@@ -796,6 +796,7 @@ dependencies = [
  "deadpool-postgres",
  "dotenvy",
  "jsonwebtoken",
+ "libc",
  "rustls",
  "rustls-pemfile",
  "serde",
