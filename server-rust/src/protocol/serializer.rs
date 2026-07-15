@@ -4,13 +4,6 @@ use super::types::{AuthResponse, ConfigPush, ErrorMessage, MessageType};
 
 pub const HEADER_SIZE: usize = 5;
 
-/// A framed, deserialized message: the type byte plus its raw payload.
-#[derive(Debug, Clone)]
-pub struct RawMessage {
-    pub msg_type: MessageType,
-    pub payload: Vec<u8>,
-}
-
 /// Serialize a message type and raw payload bytes into a framed buffer.
 pub fn serialize(msg_type: MessageType, payload: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(HEADER_SIZE + payload.len());

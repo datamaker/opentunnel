@@ -14,8 +14,10 @@ use tokio::sync::mpsc;
 pub fn spawn(mut incoming: mpsc::Receiver<Vec<u8>>, sessions: Arc<SessionManager>) {
     tokio::spawn(async move {
         while let Some(packet) = incoming.recv().await {
-            // Need at least a full IPv4 header to read the destination address.
-            if packet.len() < 20 {
+            // Need at least a full IPv4 header to read the destination address,
+            // and the version nibble must be 4 (the tunnel is IPv4-only, and the
+            // destination is only at offset 16 for IPv4).
+            if packet.len() < 20 || (packet[0] >> 4) != 4 {
                 continue;
             }
             let dest = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);

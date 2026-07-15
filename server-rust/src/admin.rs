@@ -350,11 +350,13 @@ async fn list_sessions(
 ) -> ApiResult {
     check_auth(&state, &headers, q.token.as_deref())?;
     let client = state.db.get().await.map_err(|_| db_error())?;
+    // The VPN core hard-deletes session rows on disconnect, so every row here is
+    // an active session (the schema has no `disconnected_at` column).
     let rows = client
         .query(
             "SELECT s.id, s.assigned_ip, s.client_platform, s.connected_at, u.username \
              FROM sessions s JOIN users u ON s.user_id = u.id \
-             WHERE s.disconnected_at IS NULL ORDER BY s.connected_at DESC",
+             ORDER BY s.connected_at DESC",
             &[],
         )
         .await
@@ -383,11 +385,9 @@ async fn delete_session(
 ) -> ApiResult {
     check_auth(&state, &headers, q.token.as_deref())?;
     let client = state.db.get().await.map_err(|_| db_error())?;
+    // Hard delete, consistent with how the VPN core ends sessions.
     client
-        .execute(
-            "UPDATE sessions SET disconnected_at = NOW() WHERE id = $1",
-            &[&id],
-        )
+        .execute("DELETE FROM sessions WHERE id = $1", &[&id])
         .await
         .map_err(|_| db_error())?;
     tracing::info!("Session terminated: {id}");
@@ -414,10 +414,7 @@ async fn stats(
         .await
         .map_err(|_| db_error())?;
     let sessions = client
-        .query_one(
-            "SELECT COUNT(*) as active FROM sessions WHERE disconnected_at IS NULL",
-            &[],
-        )
+        .query_one("SELECT COUNT(*) as active FROM sessions", &[])
         .await
         .map_err(|_| db_error())?;
     let logs = client

@@ -42,10 +42,11 @@ pub async fn start(
 async fn start_mock() -> anyhow::Result<(TunHandle, mpsc::Receiver<Vec<u8>>)> {
     let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(1024);
     let (in_tx, in_rx) = mpsc::channel::<Vec<u8>>(1024);
-    // Keep the inbound sender alive so the channel stays open.
-    std::mem::forget(in_tx);
 
     tokio::spawn(async move {
+        // Hold the inbound sender for the task's lifetime so the receiver stays
+        // open; the mock never actually produces inbound packets.
+        let _in_tx = in_tx;
         while let Some(pkt) = write_rx.recv().await {
             tracing::debug!("mock TUN: dropping {} byte packet", pkt.len());
         }

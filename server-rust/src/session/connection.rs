@@ -4,7 +4,7 @@
 //! handling in `index.ts`: authentication, config push, keepalive and data
 //! forwarding for a single client socket.
 
-use crate::protocol::{serializer, AuthResponse, ConfigPush, MessageBuffer, MessageType};
+use crate::protocol::{serializer, AuthResponse, ConfigPush, Frame, MessageBuffer, MessageType};
 use crate::state::SharedState;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -114,25 +114,22 @@ struct Connection {
 impl Connection {
     /// Process every fully-buffered frame. Returns `false` to close the socket.
     async fn drain_buffer(&mut self, buffer: &mut MessageBuffer) -> bool {
-        loop {
-            match buffer.extract() {
-                Ok(Some(msg)) => {
-                    if !self.dispatch(msg.msg_type, msg.payload).await {
-                        return false;
-                    }
-                }
-                Ok(None) => return true,
-                Err(unknown) => {
-                    tracing::warn!("Session {}: unknown message type {}", self.id, unknown);
-                    return true;
-                }
+        while let Some(frame) = buffer.extract() {
+            if !self.dispatch(frame).await {
+                return false;
             }
         }
+        true
     }
 
-    async fn dispatch(&mut self, msg_type: MessageType, payload: Vec<u8>) -> bool {
+    async fn dispatch(&mut self, frame: Frame) -> bool {
+        let Some(msg_type) = MessageType::from_u8(frame.type_byte) else {
+            tracing::warn!("Session {}: unknown message type {}", self.id, frame.type_byte);
+            return true;
+        };
+
         match msg_type {
-            MessageType::AuthRequest => self.handle_auth(payload).await,
+            MessageType::AuthRequest => self.handle_auth(frame.payload).await,
             MessageType::Keepalive => {
                 let _ = self.tx.send(serializer::keepalive_ack()).await;
                 if let Some(id) = self.session_db_id {
@@ -148,7 +145,7 @@ impl Connection {
             }
             MessageType::DataPacket => {
                 if self.authenticated {
-                    self.state.tun.write(payload).await;
+                    self.state.tun.write(frame.payload).await;
                 }
                 true
             }

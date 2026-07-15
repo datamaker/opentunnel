@@ -21,10 +21,13 @@ pub struct SessionHandle {
     pub bytes_received: Arc<AtomicU64>,
 }
 
+/// Sessions are indexed by assigned IP for the routing hot path, and by id for
+/// lifecycle operations. Both maps are guarded by plain mutexes; the routing
+/// path takes a single, short lock and clones only the cheap `mpsc::Sender`.
 #[derive(Default)]
 pub struct SessionManager {
-    sessions: Mutex<HashMap<Uuid, SessionHandle>>,
-    by_ip: Mutex<HashMap<Ipv4Addr, Uuid>>,
+    by_ip: Mutex<HashMap<Ipv4Addr, SessionHandle>>,
+    ids: Mutex<HashMap<Uuid, Ipv4Addr>>,
 }
 
 pub struct ManagerStats {
@@ -39,50 +42,45 @@ impl SessionManager {
     }
 
     pub fn register(&self, handle: SessionHandle) {
-        self.by_ip
-            .lock()
-            .unwrap()
-            .insert(handle.assigned_ip, handle.id);
-        self.sessions.lock().unwrap().insert(handle.id, handle);
+        self.ids.lock().unwrap().insert(handle.id, handle.assigned_ip);
+        self.by_ip.lock().unwrap().insert(handle.assigned_ip, handle);
     }
 
     pub fn unregister(&self, id: Uuid) {
-        if let Some(handle) = self.sessions.lock().unwrap().remove(&id) {
-            self.by_ip.lock().unwrap().remove(&handle.assigned_ip);
+        if let Some(ip) = self.ids.lock().unwrap().remove(&id) {
+            self.by_ip.lock().unwrap().remove(&ip);
         }
     }
 
     /// Forward an inbound IP packet to the session that owns `dest_ip`.
     /// Returns `true` if a matching session was found.
+    ///
+    /// The lock is held only long enough to clone the channel sender; framing
+    /// and the non-blocking send happen outside the critical section.
     pub fn route_to_client(&self, dest_ip: Ipv4Addr, packet: &[u8]) -> bool {
-        let handle = self.by_ip.lock().unwrap().get(&dest_ip).and_then(|id| {
-            self.sessions.lock().unwrap().get(id).cloned()
-        });
-
-        if let Some(handle) = handle {
-            let framed = serializer::data_packet(packet);
-            handle.bytes_sent.fetch_add(framed.len() as u64, Ordering::Relaxed);
+        let tx = self.by_ip.lock().unwrap().get(&dest_ip).map(|h| h.tx.clone());
+        match tx {
             // Non-blocking send; drop the packet if the client is backed up.
-            handle.tx.try_send(framed).is_ok()
-        } else {
-            false
+            // Bytes are counted by the session's writer task, not here.
+            Some(tx) => tx.try_send(serializer::data_packet(packet)).is_ok(),
+            None => false,
         }
     }
 
     pub fn active_count(&self) -> usize {
-        self.sessions.lock().unwrap().len()
+        self.ids.lock().unwrap().len()
     }
 
     pub fn stats(&self) -> ManagerStats {
-        let sessions = self.sessions.lock().unwrap();
+        let by_ip = self.by_ip.lock().unwrap();
         let mut total_bytes_sent = 0;
         let mut total_bytes_received = 0;
-        for handle in sessions.values() {
+        for handle in by_ip.values() {
             total_bytes_sent += handle.bytes_sent.load(Ordering::Relaxed);
             total_bytes_received += handle.bytes_received.load(Ordering::Relaxed);
         }
         ManagerStats {
-            active_sessions: sessions.len(),
+            active_sessions: by_ip.len(),
             total_bytes_sent,
             total_bytes_received,
         }
@@ -90,7 +88,7 @@ impl SessionManager {
 
     pub fn close_all(&self) {
         // Dropping the senders closes each writer task, which shuts the socket.
-        self.sessions.lock().unwrap().clear();
         self.by_ip.lock().unwrap().clear();
+        self.ids.lock().unwrap().clear();
     }
 }
