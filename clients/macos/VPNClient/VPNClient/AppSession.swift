@@ -99,10 +99,19 @@ final class AppSession: ObservableObject {
     }
 }
 
-// MARK: - macOS color helpers
-// iOS uses Color(.systemGroupedBackground)/Color(.systemBackground); these
-// are the AppKit equivalents so the shared card look survives on macOS.
+// MARK: - Cross-platform color helpers
+// This project is archived for iOS, macOS (and formerly visionOS) via Xcode
+// Cloud, so the card colors must resolve on every platform, not just AppKit.
+#if os(macOS)
+import AppKit
 extension Color {
     static var groupedBackground: Color { Color(nsColor: .windowBackgroundColor) }
     static var cardBackground: Color { Color(nsColor: .controlBackgroundColor) }
 }
+#else
+import UIKit
+extension Color {
+    static var groupedBackground: Color { Color(uiColor: .systemGroupedBackground) }
+    static var cardBackground: Color { Color(uiColor: .secondarySystemGroupedBackground) }
+}
+#endif
