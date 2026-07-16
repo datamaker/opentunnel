@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using VPNClient.Network;
 using VPNClient.Protocol;
+using VPNClient.Services;
 using VPNClient.ViewModels;
 
 namespace VPNClient.Views;
@@ -58,21 +59,20 @@ public partial class LoginView : UserControl
         }
     }
 
-    private void SaveCredentials()
+    private void SaveCredentials(string username, string password, string server, int port)
     {
         try
         {
             if (RememberMeCheckBox.IsChecked == true)
             {
-                Properties.Settings.Default.SavedUsername = UsernameTextBox.Text;
-                Properties.Settings.Default.RememberMe = true;
+                // Persist username + DPAPI-encrypted password + server so the app
+                // stays signed in across restarts (parity with the other clients).
+                CredentialStore.Save(username, password, server, port);
             }
             else
             {
-                Properties.Settings.Default.SavedUsername = string.Empty;
-                Properties.Settings.Default.RememberMe = false;
+                CredentialStore.Clear();
             }
-            Properties.Settings.Default.Save();
         }
         catch (Exception ex)
         {
@@ -159,13 +159,15 @@ public partial class LoginView : UserControl
                 _logger.LogInformation("Authentication successful for user: {Username}", username);
 
                 // Save credentials if remember me is checked
-                SaveCredentials();
+                SaveCredentials(username, password, serverAddress, port);
 
                 // Publish the authenticated session + server details to the shared VM
-                // so the Main screen can connect with them.
+                // so the Main screen can connect with them. The real password is kept
+                // in the VM because the server re-verifies it on the tunnel connection.
                 _viewModel.ServerAddress = serverAddress;
                 _viewModel.ServerPort = port;
                 _viewModel.Username = username;
+                _viewModel.Password = password;
                 _viewModel.SessionToken = response.SessionToken ?? string.Empty;
                 _viewModel.IsAuthenticated = true;
 

@@ -24,6 +24,14 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private string? _sessionToken;
 
+    /// <summary>
+    /// The account password, kept for the lifetime of the session so the tunnel
+    /// can re-authenticate on (re)connect. The server verifies the password on
+    /// every connection — the session token is not accepted as a credential.
+    /// </summary>
+    [ObservableProperty]
+    private string? _password;
+
     [ObservableProperty]
     private bool _isConnected;
 
@@ -40,7 +48,7 @@ public partial class MainViewModel : ObservableObject
     private string? _serverAddress;
 
     [ObservableProperty]
-    private int _serverPort = 443;
+    private int _serverPort = 1194;
 
     [ObservableProperty]
     private TimeSpan _connectionDuration;
@@ -81,7 +89,7 @@ public partial class MainViewModel : ObservableObject
         {
             _logger.LogWarning(ex, "Failed to load saved settings");
             ServerAddress = "vpn.example.com";
-            ServerPort = 443;
+            ServerPort = 1194;
         }
     }
 
@@ -163,7 +171,7 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            await _vpnTunnel.ConnectAsync(ServerAddress, ServerPort, Username!, SessionToken!);
+            await _vpnTunnel.ConnectAsync(ServerAddress, ServerPort, Username!, Password!);
         }
         catch (Exception ex)
         {
@@ -200,6 +208,8 @@ public partial class MainViewModel : ObservableObject
         IsAuthenticated = false;
         Username = null;
         SessionToken = null;
+        Password = null;
+        CredentialStore.Clear();
         _logger.LogInformation("User logged out");
     }
 

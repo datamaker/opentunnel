@@ -51,7 +51,7 @@ public class VpnTunnel : IDisposable
     /// <summary>
     /// Connect to VPN server with given credentials
     /// </summary>
-    public async Task ConnectAsync(string serverAddress, int port, string username, string sessionToken)
+    public async Task ConnectAsync(string serverAddress, int port, string username, string password)
     {
         if (IsConnected)
         {
@@ -76,7 +76,11 @@ public class VpnTunnel : IDisposable
             var authRequest = new AuthRequest
             {
                 Username = username,
-                Password = sessionToken, // Using session token as password for re-auth
+                // The server authenticates every connection with the account
+                // password (bcrypt). It does NOT accept the JWT session token as
+                // a credential, so we must re-send the real password here — the
+                // same way the iOS/macOS/Android clients do.
+                Password = password,
                 ClientVersion = "1.0.0",
                 Platform = "windows"
             };

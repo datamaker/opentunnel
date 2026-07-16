@@ -5,6 +5,9 @@
     <Setting Name="SavedUsername" Type="System.String" Scope="User">
       <Value Profile="(Default)" />
     </Setting>
+    <Setting Name="SavedPasswordEnc" Type="System.String" Scope="User">
+      <Value Profile="(Default)" />
+    </Setting>
     <Setting Name="RememberMe" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">False</Value>
     </Setting>
@@ -36,7 +39,7 @@
       <Value Profile="(Default)">vpn.example.com</Value>
     </Setting>
     <Setting Name="LastServerPort" Type="System.Int32" Scope="User">
-      <Value Profile="(Default)">443</Value>
+      <Value Profile="(Default)">1194</Value>
     </Setting>
   </Settings>
 </SettingsFile>

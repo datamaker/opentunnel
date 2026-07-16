@@ -96,6 +96,7 @@
 
             <!-- Remember credentials -->
             <CheckBox x:Name="RememberMeCheckBox" Content="Remember credentials"
+                      IsChecked="True"
                       Foreground="{StaticResource TextPrimaryBrush}"
                       Margin="4,0,0,20"/>
 

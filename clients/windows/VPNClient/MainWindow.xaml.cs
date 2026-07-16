@@ -1,6 +1,7 @@
 using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using VPNClient.Services;
 using VPNClient.ViewModels;
 using VPNClient.Views;
 
@@ -31,7 +32,23 @@ public partial class MainWindow : Window
         // hosted UserControls inherit it through the ContentControl.
         DataContext = _viewModel;
 
-        ShowLogin();
+        // Stay signed in across restarts: if we have saved credentials, restore
+        // the session and go straight to the Main screen (the user still taps
+        // Connect). Otherwise show the login screen.
+        var saved = CredentialStore.Load();
+        if (saved is { } cred)
+        {
+            _viewModel.Username = cred.Username;
+            _viewModel.Password = cred.Password;
+            _viewModel.ServerAddress = cred.Server;
+            _viewModel.ServerPort = cred.Port;
+            _viewModel.IsAuthenticated = true;
+            ShowMain();
+        }
+        else
+        {
+            ShowLogin();
+        }
 
         _logger.LogInformation("MainWindow initialized");
     }

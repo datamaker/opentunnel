@@ -207,7 +207,7 @@ public partial class MainView : UserControl
                 serverAddress,
                 port,
                 _viewModel.Username!,
-                _viewModel.SessionToken!);
+                _viewModel.Password!);
         }
         catch (Exception ex)
         {

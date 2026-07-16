@@ -40,6 +40,21 @@ internal sealed partial class Settings : global::System.Configuration.Applicatio
 
     [global::System.Configuration.UserScopedSettingAttribute()]
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+    [global::System.Configuration.DefaultSettingValueAttribute("")]
+    public string SavedPasswordEnc
+    {
+        get
+        {
+            return ((string)(this["SavedPasswordEnc"]));
+        }
+        set
+        {
+            this["SavedPasswordEnc"] = value;
+        }
+    }
+
+    [global::System.Configuration.UserScopedSettingAttribute()]
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
     [global::System.Configuration.DefaultSettingValueAttribute("False")]
     public bool RememberMe
     {
@@ -190,7 +205,7 @@ internal sealed partial class Settings : global::System.Configuration.Applicatio
 
     [global::System.Configuration.UserScopedSettingAttribute()]
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-    [global::System.Configuration.DefaultSettingValueAttribute("443")]
+    [global::System.Configuration.DefaultSettingValueAttribute("1194")]
     public int LastServerPort
     {
         get
