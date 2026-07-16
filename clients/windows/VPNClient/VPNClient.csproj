@@ -14,6 +14,8 @@
     <Description>Windows VPN Client with WinTun</Description>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PlatformTarget>x64</PlatformTarget>
+    <!-- Run elevated so WinTun can create the virtual network adapter (UAC prompt on launch). -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>
