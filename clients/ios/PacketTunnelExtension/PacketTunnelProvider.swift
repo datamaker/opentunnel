@@ -178,7 +178,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     /// Build the tunnel settings, honoring split-tunnel policy.
     private func makeTunnelSettings() -> NEPacketTunnelNetworkSettings {
-        let tunnelSettings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: serverAddress)
+        // tunnelRemoteAddress must be a valid IP (a hostname like "vpn.cacheby.com"
+        // is rejected as "Invalid NETunnelNetworkSettings tunnelRemoteAddress").
+        // Use the VPN gateway IP, matching the macOS client.
+        let tunnelSettings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: gateway)
         let ipv4Settings = NEIPv4Settings(addresses: [assignedIP], subnetMasks: [subnetMask])
 
         if splitTunnel {
@@ -188,11 +191,15 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             let defaultRoute = NEIPv4Route.default()
             defaultRoute.gatewayAddress = gateway
             ipv4Settings.includedRoutes = [defaultRoute]
+            // Keep the VPN server itself off the tunnel to avoid loops. NEIPv4Route
+            // needs an IP, so only add this when serverAddress is an IP (not a
+            // hostname). In split mode the server isn't routed in, so it's moot.
+            if CidrUtils.parse(serverAddress) != nil {
+                ipv4Settings.excludedRoutes = [
+                    NEIPv4Route(destinationAddress: serverAddress, subnetMask: "255.255.255.255")
+                ]
+            }
         }
-
-        // Always keep the VPN server itself off the tunnel to avoid loops.
-        let serverRoute = NEIPv4Route(destinationAddress: serverAddress, subnetMask: "255.255.255.255")
-        ipv4Settings.excludedRoutes = [serverRoute]
         tunnelSettings.ipv4Settings = ipv4Settings
 
         // Route DNS through the tunnel resolver so answers are observable for
