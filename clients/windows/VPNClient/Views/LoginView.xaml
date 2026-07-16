@@ -4,52 +4,119 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              mc:Ignorable="d"
-             d:DesignWidth="380">
+             d:DesignWidth="450" d:DesignHeight="700"
+             Background="{StaticResource BackgroundBrush}">
 
-    <Grid>
-        <StackPanel>
-            <!-- Header -->
-            <TextBlock Text="Sign In" FontSize="18" FontWeight="SemiBold"
-                       Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,8"/>
-            <TextBlock Text="Enter your credentials to connect"
-                       FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
-                       Margin="0,0,0,24"/>
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="28,32,28,28">
 
-            <!-- Username -->
-            <TextBlock Text="Username" FontSize="12" FontWeight="Medium"
-                       Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,8"/>
-            <TextBox x:Name="UsernameTextBox"
-                     Style="{StaticResource ModernTextBoxStyle}"
-                     Margin="0,0,0,16"/>
+            <!-- Header: shield logo + brand -->
+            <StackPanel HorizontalAlignment="Center" Margin="0,8,0,28">
+                <Viewbox Width="72" Height="72" HorizontalAlignment="Center">
+                    <Grid Width="24" Height="24">
+                        <Path Fill="{StaticResource BrandGradientBrush}"
+                              Data="M12,2 L20,5 L20,11 C20,16 16.4,20.5 12,22 C7.6,20.5 4,16 4,11 L4,5 Z"/>
+                        <Path Stroke="White" StrokeThickness="1.6"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                              StrokeLineJoin="Round"
+                              Data="M8.2,12 L11,14.6 L15.8,9.2"/>
+                    </Grid>
+                </Viewbox>
 
-            <!-- Password -->
-            <TextBlock Text="Password" FontSize="12" FontWeight="Medium"
-                       Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,8"/>
-            <PasswordBox x:Name="PasswordBox"
-                         Style="{StaticResource ModernPasswordBoxStyle}"
-                         Margin="0,0,0,8"/>
+                <TextBlock Text="OpenTunnel" FontSize="28" FontWeight="Bold"
+                           Foreground="{StaticResource TextPrimaryBrush}"
+                           HorizontalAlignment="Center" Margin="0,16,0,4"/>
+                <TextBlock Text="Secure your connection" FontSize="14"
+                           Foreground="{StaticResource TextSecondaryBrush}"
+                           HorizontalAlignment="Center"/>
+            </StackPanel>
 
-            <!-- Remember Me -->
-            <CheckBox x:Name="RememberMeCheckBox" Content="Remember me"
-                      Margin="0,0,0,24" Foreground="{StaticResource TextPrimaryBrush}"/>
+            <!-- Server group -->
+            <TextBlock Text="SERVER" FontSize="12" FontWeight="SemiBold"
+                       Foreground="{StaticResource TextSecondaryBrush}" Margin="4,0,0,8"/>
+            <Border Style="{StaticResource CardStyle}" Padding="16" Margin="0,0,0,20">
+                <StackPanel>
+                    <TextBlock Text="Server Address" FontSize="12" FontWeight="Medium"
+                               Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,8"/>
+                    <TextBox x:Name="ServerAddressTextBox"
+                             Style="{StaticResource ModernTextBoxStyle}"
+                             Margin="0,0,0,16"/>
 
-            <!-- Error Message -->
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Port" FontSize="12" FontWeight="Medium"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextPrimaryBrush}"/>
+                        <TextBox x:Name="PortTextBox" Grid.Column="1" Width="110"
+                                 Style="{StaticResource ModernTextBoxStyle}"
+                                 TextAlignment="Center"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- Credentials group -->
+            <TextBlock Text="CREDENTIALS" FontSize="12" FontWeight="SemiBold"
+                       Foreground="{StaticResource TextSecondaryBrush}" Margin="4,0,0,8"/>
+            <Border Style="{StaticResource CardStyle}" Padding="16" Margin="0,0,0,16">
+                <StackPanel>
+                    <TextBlock Text="Username" FontSize="12" FontWeight="Medium"
+                               Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,8"/>
+                    <TextBox x:Name="UsernameTextBox"
+                             Style="{StaticResource ModernTextBoxStyle}"
+                             Margin="0,0,0,16"/>
+
+                    <TextBlock Text="Password" FontSize="12" FontWeight="Medium"
+                               Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,8"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Masked password (default) -->
+                        <PasswordBox x:Name="PasswordBox"
+                                     Style="{StaticResource ModernPasswordBoxStyle}"/>
+                        <!-- Revealed password (shown when toggled) -->
+                        <TextBox x:Name="PasswordTextBox"
+                                 Style="{StaticResource ModernTextBoxStyle}"
+                                 Visibility="Collapsed"/>
+
+                        <Button x:Name="TogglePasswordButton" Grid.Column="1"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Padding="12,8" Margin="8,0,0,0"
+                                Click="TogglePasswordButton_Click">
+                            <TextBlock x:Name="TogglePasswordText" Text="Show" FontSize="12"/>
+                        </Button>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- Remember credentials -->
+            <CheckBox x:Name="RememberMeCheckBox" Content="Remember credentials"
+                      Foreground="{StaticResource TextPrimaryBrush}"
+                      Margin="4,0,0,20"/>
+
+            <!-- Error message -->
             <TextBlock x:Name="ErrorMessage" Text="" TextWrapping="Wrap"
                        Foreground="{StaticResource ErrorBrush}" FontSize="12"
                        Margin="0,0,0,16" Visibility="Collapsed"/>
 
-            <!-- Login Button -->
+            <!-- Sign In -->
             <Button x:Name="LoginButton" Style="{StaticResource ModernButtonStyle}"
                     Content="Sign In" Click="LoginButton_Click"
                     HorizontalAlignment="Stretch"/>
 
-            <!-- Loading Indicator -->
+            <!-- Loading indicator -->
             <StackPanel x:Name="LoadingPanel" Orientation="Horizontal"
                         HorizontalAlignment="Center" Margin="0,16,0,0"
                         Visibility="Collapsed">
-                <ProgressBar IsIndeterminate="True" Width="100" Height="3"
+                <ProgressBar IsIndeterminate="True" Width="120" Height="3"
                              Foreground="{StaticResource PrimaryBrush}"/>
             </StackPanel>
+
         </StackPanel>
-    </Grid>
+    </ScrollViewer>
 </UserControl>

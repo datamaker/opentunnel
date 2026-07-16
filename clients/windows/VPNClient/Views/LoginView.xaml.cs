@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using VPNClient.Network;
 using VPNClient.Protocol;
+using VPNClient.ViewModels;
 
 namespace VPNClient.Views;
 
@@ -14,6 +15,9 @@ public partial class LoginView : UserControl
 {
     private readonly ILogger<LoginView> _logger;
     private readonly TlsConnection _tlsConnection;
+    private readonly MainViewModel _viewModel;
+
+    private bool _passwordVisible;
 
     public event EventHandler<LoginEventArgs>? LoginSuccessful;
 
@@ -23,6 +27,13 @@ public partial class LoginView : UserControl
 
         _logger = App.ServiceProvider.GetRequiredService<ILogger<LoginView>>();
         _tlsConnection = App.ServiceProvider.GetRequiredService<TlsConnection>();
+        _viewModel = App.ServiceProvider.GetRequiredService<MainViewModel>();
+
+        // Prefill the server fields from the last-used values held by the VM.
+        ServerAddressTextBox.Text = string.IsNullOrWhiteSpace(_viewModel.ServerAddress)
+            ? "vpn.example.com"
+            : _viewModel.ServerAddress;
+        PortTextBox.Text = _viewModel.ServerPort.ToString();
 
         // Load saved credentials if remember me was checked
         LoadSavedCredentials();
@@ -69,11 +80,33 @@ public partial class LoginView : UserControl
         }
     }
 
+    private void TogglePasswordButton_Click(object sender, RoutedEventArgs e)
+    {
+        _passwordVisible = !_passwordVisible;
+
+        if (_passwordVisible)
+        {
+            PasswordTextBox.Text = PasswordBox.Password;
+            PasswordTextBox.Visibility = Visibility.Visible;
+            PasswordBox.Visibility = Visibility.Collapsed;
+            TogglePasswordText.Text = "Hide";
+        }
+        else
+        {
+            PasswordBox.Password = PasswordTextBox.Text;
+            PasswordBox.Visibility = Visibility.Visible;
+            PasswordTextBox.Visibility = Visibility.Collapsed;
+            TogglePasswordText.Text = "Show";
+        }
+    }
+
+    private string CurrentPassword => _passwordVisible ? PasswordTextBox.Text : PasswordBox.Password;
+
     private async void LoginButton_Click(object sender, RoutedEventArgs e)
     {
         // Validate input
         var username = UsernameTextBox.Text.Trim();
-        var password = PasswordBox.Password;
+        var password = CurrentPassword;
 
         if (string.IsNullOrEmpty(username))
         {
@@ -87,17 +120,25 @@ public partial class LoginView : UserControl
             return;
         }
 
+        var serverAddress = GetServerAddress();
+        if (string.IsNullOrEmpty(serverAddress))
+        {
+            ShowError("Please enter a server address.");
+            return;
+        }
+
+        if (!TryGetServerPort(out int port))
+        {
+            ShowError("Please enter a valid port number (1-65535).");
+            return;
+        }
+
         // Show loading state
         SetLoadingState(true);
         HideError();
 
         try
         {
-            // For now, we'll create a temporary connection for authentication
-            // In a real scenario, this would authenticate against the server
-            var serverAddress = GetServerAddress();
-            var port = GetServerPort();
-
             _logger.LogInformation("Attempting authentication for user: {Username}", username);
 
             // Connect and authenticate
@@ -119,6 +160,14 @@ public partial class LoginView : UserControl
 
                 // Save credentials if remember me is checked
                 SaveCredentials();
+
+                // Publish the authenticated session + server details to the shared VM
+                // so the Main screen can connect with them.
+                _viewModel.ServerAddress = serverAddress;
+                _viewModel.ServerPort = port;
+                _viewModel.Username = username;
+                _viewModel.SessionToken = response.SessionToken ?? string.Empty;
+                _viewModel.IsAuthenticated = true;
 
                 // Disconnect the temporary connection (will reconnect through VpnTunnel)
                 await _tlsConnection.DisconnectAsync();
@@ -152,36 +201,28 @@ public partial class LoginView : UserControl
         }
     }
 
-    private string GetServerAddress()
-    {
-        // Get server address from parent window
-        if (Window.GetWindow(this) is MainWindow mainWindow)
-        {
-            var serverTextBox = mainWindow.FindName("ServerAddressTextBox") as TextBox;
-            return serverTextBox?.Text.Trim() ?? "localhost";
-        }
-        return "localhost";
-    }
+    private string GetServerAddress() => ServerAddressTextBox.Text.Trim();
 
-    private int GetServerPort()
+    private bool TryGetServerPort(out int port)
     {
-        // Get server port from parent window
-        if (Window.GetWindow(this) is MainWindow mainWindow)
+        if (int.TryParse(PortTextBox.Text.Trim(), out port) && port > 0 && port <= 65535)
         {
-            var portTextBox = mainWindow.FindName("PortTextBox") as TextBox;
-            if (int.TryParse(portTextBox?.Text.Trim(), out int port))
-            {
-                return port;
-            }
+            return true;
         }
-        return 443;
+
+        port = 0;
+        return false;
     }
 
     private void SetLoadingState(bool isLoading)
     {
         LoginButton.IsEnabled = !isLoading;
+        ServerAddressTextBox.IsEnabled = !isLoading;
+        PortTextBox.IsEnabled = !isLoading;
         UsernameTextBox.IsEnabled = !isLoading;
         PasswordBox.IsEnabled = !isLoading;
+        PasswordTextBox.IsEnabled = !isLoading;
+        TogglePasswordButton.IsEnabled = !isLoading;
         RememberMeCheckBox.IsEnabled = !isLoading;
         LoadingPanel.Visibility = isLoading ? Visibility.Visible : Visibility.Collapsed;
     }
