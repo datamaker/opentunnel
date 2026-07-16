@@ -2,48 +2,34 @@
 //  LoginView.swift
 //  VPNClient
 //
-//  Login screen for VPN authentication
+//  Login screen for the macOS OpenTunnel client.
+//  Visual design matches the iOS LoginView (shield.checkered gradient logo,
+//  card-style fields, gradient Sign In button).
 //
 
 import SwiftUI
 
 struct LoginView: View {
-    @EnvironmentObject var viewModel: VPNViewModel
+    @EnvironmentObject var session: AppSession
+
     @State private var username = ""
     @State private var password = ""
     @State private var serverAddress = ""
     @State private var serverPort = "443"
     @State private var rememberCredentials = true
     @State private var showingPassword = false
-    @FocusState private var focusedField: Field?
-
-    enum Field {
-        case username, password, serverAddress, serverPort
-    }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 32) {
-                // Logo and title
                 headerSection
-
-                // Login form
                 formSection
-
-                // Login button
                 loginButton
-
-                // Error message
-                if let error = viewModel.authError {
-                    errorMessage(error)
-                }
-
                 Spacer()
             }
             .padding()
         }
-        .background(Color(.systemGroupedBackground))
-        .navigationBarHidden(true)
+        .background(Color.groupedBackground)
         .onAppear {
             loadSavedSettings()
         }
@@ -86,34 +72,26 @@ struct LoginView: View {
 
                 HStack(spacing: 12) {
                     // Server address field
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Image(systemName: "server.rack")
-                                .foregroundColor(.gray)
-                            TextField("Server Address", text: $serverAddress)
-                                .textContentType(.URL)
-                                .autocapitalization(.none)
-                                .disableAutocorrection(true)
-                                .focused($focusedField, equals: .serverAddress)
-                        }
-                        .padding()
-                        .background(Color(.systemBackground))
-                        .cornerRadius(12)
+                    HStack {
+                        Image(systemName: "server.rack")
+                            .foregroundColor(.gray)
+                        TextField("Server Address", text: $serverAddress)
+                            .textFieldStyle(.plain)
                     }
+                    .padding()
+                    .background(Color.cardBackground)
+                    .cornerRadius(12)
 
                     // Port field
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            TextField("Port", text: $serverPort)
-                                .keyboardType(.numberPad)
-                                .multilineTextAlignment(.center)
-                                .focused($focusedField, equals: .serverPort)
-                        }
-                        .padding()
-                        .frame(width: 80)
-                        .background(Color(.systemBackground))
-                        .cornerRadius(12)
+                    HStack {
+                        TextField("Port", text: $serverPort)
+                            .textFieldStyle(.plain)
+                            .multilineTextAlignment(.center)
                     }
+                    .padding()
+                    .frame(width: 80)
+                    .background(Color.cardBackground)
+                    .cornerRadius(12)
                 }
             }
 
@@ -128,13 +106,10 @@ struct LoginView: View {
                     Image(systemName: "person.fill")
                         .foregroundColor(.gray)
                     TextField("Username", text: $username)
-                        .textContentType(.username)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        .focused($focusedField, equals: .username)
+                        .textFieldStyle(.plain)
                 }
                 .padding()
-                .background(Color(.systemBackground))
+                .background(Color.cardBackground)
                 .cornerRadius(12)
 
                 // Password field
@@ -144,14 +119,10 @@ struct LoginView: View {
 
                     if showingPassword {
                         TextField("Password", text: $password)
-                            .textContentType(.password)
-                            .autocapitalization(.none)
-                            .disableAutocorrection(true)
-                            .focused($focusedField, equals: .password)
+                            .textFieldStyle(.plain)
                     } else {
                         SecureField("Password", text: $password)
-                            .textContentType(.password)
-                            .focused($focusedField, equals: .password)
+                            .textFieldStyle(.plain)
                     }
 
                     Button {
@@ -160,9 +131,10 @@ struct LoginView: View {
                         Image(systemName: showingPassword ? "eye.slash.fill" : "eye.fill")
                             .foregroundColor(.gray)
                     }
+                    .buttonStyle(.plain)
                 }
                 .padding()
-                .background(Color(.systemBackground))
+                .background(Color.cardBackground)
                 .cornerRadius(12)
             }
 
@@ -174,8 +146,9 @@ struct LoginView: View {
                     Text("Remember credentials")
                 }
             }
+            .toggleStyle(.switch)
             .padding()
-            .background(Color(.systemBackground))
+            .background(Color.cardBackground)
             .cornerRadius(12)
         }
     }
@@ -186,14 +159,8 @@ struct LoginView: View {
             login()
         } label: {
             HStack(spacing: 12) {
-                if viewModel.isAuthenticating {
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                } else {
-                    Image(systemName: "arrow.right.circle.fill")
-                }
-
-                Text(viewModel.isAuthenticating ? "Signing in..." : "Sign In")
+                Image(systemName: "arrow.right.circle.fill")
+                Text("Sign In")
                     .fontWeight(.semibold)
             }
             .frame(maxWidth: .infinity)
@@ -208,22 +175,8 @@ struct LoginView: View {
             .foregroundColor(.white)
             .cornerRadius(12)
         }
-        .disabled(!isFormValid || viewModel.isAuthenticating)
-    }
-
-    // MARK: - Error Message
-    private func errorMessage(_ message: String) -> some View {
-        HStack {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.red)
-            Text(message)
-                .font(.subheadline)
-                .foregroundColor(.red)
-        }
-        .padding()
-        .frame(maxWidth: .infinity)
-        .background(Color.red.opacity(0.1))
-        .cornerRadius(12)
+        .buttonStyle(.plain)
+        .disabled(!isFormValid)
     }
 
     // MARK: - Computed Properties
@@ -237,40 +190,33 @@ struct LoginView: View {
 
     // MARK: - Methods
     private func login() {
-        focusedField = nil
-
-        let port = Int(serverPort) ?? 443
-
-        viewModel.login(
+        session.signIn(
+            host: serverAddress,
+            port: serverPort,
             username: username,
             password: password,
-            serverAddress: serverAddress,
-            serverPort: port,
-            rememberCredentials: rememberCredentials
+            remember: rememberCredentials
         )
     }
 
     private func loadSavedSettings() {
-        // Load saved server settings from UserDefaults
         let defaults = UserDefaults.standard
 
         if let savedServer = defaults.string(forKey: "vpn_server_address") {
             serverAddress = savedServer
         }
-
         if let savedPort = defaults.string(forKey: "vpn_server_port") {
             serverPort = savedPort
         }
-
         if let savedUsername = defaults.string(forKey: "vpn_username") {
             username = savedUsername
         }
-
-        rememberCredentials = defaults.bool(forKey: "vpn_remember_credentials")
-
-        // Restore the remembered password from the Keychain so the field pre-fills.
+        if defaults.object(forKey: "vpn_remember_credentials") != nil {
+            rememberCredentials = defaults.bool(forKey: "vpn_remember_credentials")
+        }
+        // Restore the remembered password from the Keychain.
         if rememberCredentials, !username.isEmpty,
-           let savedPassword = viewModel.savedPassword(forUsername: username) {
+           let savedPassword = CredentialStore.password(account: username) {
             password = savedPassword
         }
     }
@@ -278,8 +224,7 @@ struct LoginView: View {
 
 // MARK: - Preview
 #Preview {
-    NavigationStack {
-        LoginView()
-    }
-    .environmentObject(VPNViewModel())
+    LoginView()
+        .environmentObject(AppSession())
+        .frame(width: 400, height: 640)
 }

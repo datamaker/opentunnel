@@ -32,9 +32,9 @@ struct ContentView: View {
                 LoginView()
             }
         }
-        .onAppear {
-            viewModel.loadSavedCredentials()
-        }
+        // No silent auto-login: the login screen pre-fills remembered
+        // credentials (incl. password from Keychain) and the user taps Sign In —
+        // consistent with the macOS client.
     }
 }
 

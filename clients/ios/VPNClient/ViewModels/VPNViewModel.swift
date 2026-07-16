@@ -193,6 +193,12 @@ class VPNViewModel: ObservableObject {
         )
     }
 
+    /// The remembered password for a username (from the Keychain), for pre-filling
+    /// the login screen. Returns nil if nothing is stored.
+    func savedPassword(forUsername username: String) -> String? {
+        loadPasswordFromKeychain(username: username)
+    }
+
     func clearSavedCredentials() {
         let defaults = UserDefaults.standard
 
