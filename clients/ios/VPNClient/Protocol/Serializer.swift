@@ -208,6 +208,12 @@ class StreamBuffer {
             let (message, bytesConsumed) = try VPNMessageSerializer.deserialize(from: buffer)
             messages.append(message)
             buffer.removeFirst(bytesConsumed)
+            // `removeFirst` advances the Data's startIndex instead of reindexing to
+            // 0. The parsers (VPNMessageHeader.decode / deserialize) use absolute
+            // 0-based indices (data[0], subdata(in: 1..<5), ...), so re-base the
+            // buffer to a 0-based Data — otherwise the next frame traps with an
+            // out-of-bounds subscript.
+            buffer = Data(buffer)
         }
 
         return messages

@@ -61,3 +61,10 @@ coverage/
 # Provisioning profiles
 *.provisionprofile
 *.mobileprovision
+
+# Xcode build output / DerivedData
+clients/ios/build-run/
+clients/macos/build-run/
+DerivedData/
+*.xcuserstate
+xcuserdata/

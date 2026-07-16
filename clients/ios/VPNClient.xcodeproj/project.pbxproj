@@ -23,6 +23,7 @@
 		002000000000000000000002 /* TLSConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 002000000000000000000012 /* TLSConnection.swift */; };
 		002000000000000000000003 /* VPNMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001000000000000000000017 /* VPNMessage.swift */; };
 		002000000000000000000004 /* Serializer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 001000000000000000000018 /* Serializer.swift */; };
+		002000000000000000000005 /* SplitRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 002000000000000000000013 /* SplitRouting.swift */; };
 
 		/* Framework References */
 		003000000000000000000001 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 003000000000000000000011 /* NetworkExtension.framework */; };
@@ -74,6 +75,7 @@
 		/* PacketTunnelExtension */
 		002000000000000000000011 /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
 		002000000000000000000012 /* TLSConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TLSConnection.swift; sourceTree = "<group>"; };
+		002000000000000000000013 /* SplitRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitRouting.swift; sourceTree = "<group>"; };
 		002000000000000000000021 /* PacketTunnelExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PacketTunnelExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		002000000000000000000022 /* PacketTunnelExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PacketTunnelExtension.entitlements; sourceTree = "<group>"; };
 		002000000000000000000023 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -132,6 +134,7 @@
 			children = (
 				002000000000000000000011 /* PacketTunnelProvider.swift */,
 				002000000000000000000012 /* TLSConnection.swift */,
+				002000000000000000000013 /* SplitRouting.swift */,
 				002000000000000000000022 /* PacketTunnelExtension.entitlements */,
 				002000000000000000000023 /* Info.plist */,
 			);
@@ -316,6 +319,7 @@
 				002000000000000000000002 /* TLSConnection.swift in Sources */,
 				002000000000000000000003 /* VPNMessage.swift in Sources */,
 				002000000000000000000004 /* Serializer.swift in Sources */,
+				002000000000000000000005 /* SplitRouting.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

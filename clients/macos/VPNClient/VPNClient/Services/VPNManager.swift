@@ -37,6 +37,9 @@ class VPNManager: ObservableObject {
     @Published var errorMessage: String?
     @Published var bytesIn: UInt64 = 0
     @Published var bytesOut: UInt64 = 0
+    @Published var gateway: String = ""
+    @Published var dnsServers: [String] = []
+    @Published var mtu: Int = 0
 
     // MARK: - Configuration
 
@@ -116,6 +119,9 @@ class VPNManager: ObservableObject {
             connectedTime = nil
             bytesIn = 0
             bytesOut = 0
+            gateway = ""
+            dnsServers = []
+            mtu = 0
         case .connecting:
             status = .connecting
         case .connected:
@@ -234,6 +240,18 @@ class VPNManager: ObservableObject {
                 bytesOut = outBytes
             } else if let outBytes = stats["bytesOut"] as? Int {
                 bytesOut = UInt64(outBytes)
+            }
+            if let ip = stats["assignedIP"] as? String, !ip.isEmpty {
+                assignedIP = ip
+            }
+            if let gw = stats["gateway"] as? String {
+                gateway = gw
+            }
+            if let dns = stats["dns"] as? [String] {
+                dnsServers = dns
+            }
+            if let m = stats["mtu"] as? Int {
+                mtu = m
             }
         }
     }

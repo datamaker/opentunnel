@@ -20,6 +20,11 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private var bytesOut: UInt64 = 0
     private var serverHost: String = ""
 
+    // Split-tunnel state (populated from the server's ConfigPush).
+    private var tunnelConfig: ConfigPush?
+    private var domainMatcher: DomainMatcher?
+    private var dynamicRoutes: Set<String> = []
+
     private let logger = Logger(subsystem: "com.vpnclient.tunnel", category: "Provider")
 
     // MARK: - Tunnel Lifecycle
@@ -71,11 +76,18 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 let status = isRunning ? "connected" : "disconnected"
                 completionHandler?(status.data(using: .utf8))
             case "stats":
-                let stats: [String: Any] = [
+                var stats: [String: Any] = [
                     "bytesIn": bytesIn,
                     "bytesOut": bytesOut,
                     "isRunning": isRunning
                 ]
+                // Surface the pushed network config so the app can display it.
+                if let cfg = tunnelConfig {
+                    stats["assignedIP"] = cfg.assignedIP
+                    stats["gateway"] = cfg.gateway
+                    stats["dns"] = cfg.dns
+                    stats["mtu"] = Int(cfg.mtu)
+                }
                 if let data = try? JSONSerialization.data(withJSONObject: stats) {
                     completionHandler?(data)
                 } else {
@@ -265,28 +277,17 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     // MARK: - Tunnel Configuration
 
     private func configureTunnel(config: ConfigPush) {
-        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: config.gateway)
+        tunnelConfig = config
 
-        // IPv4 - Full Tunnel: route all traffic through VPN
-        let ipv4 = NEIPv4Settings(addresses: [config.assignedIP], subnetMasks: [config.subnetMask])
+        // Set up split-tunnel policy from the server's push (if enabled).
+        let splitOn = config.splitTunnel ?? false
+        let domains = config.includedDomains ?? []
+        domainMatcher = (splitOn && !domains.isEmpty) ? DomainMatcher(domains) : nil
+        dynamicRoutes = []
 
-        // Route all traffic through VPN
-        ipv4.includedRoutes = [NEIPv4Route.default()]
+        let settings = makeNetworkSettings(for: config)
 
-        // Exclude VPN server IP to keep control connection working
-        let serverRoute = NEIPv4Route(destinationAddress: serverHost, subnetMask: "255.255.255.255")
-        ipv4.excludedRoutes = [serverRoute]
-
-        settings.ipv4Settings = ipv4
-
-        // DNS
-        settings.dnsSettings = NEDNSSettings(servers: config.dns)
-        settings.dnsSettings?.matchDomains = [""]
-
-        // MTU
-        settings.mtu = NSNumber(value: config.mtu)
-
-        logger.info("Calling setTunnelNetworkSettings...")
+        logger.info("Calling setTunnelNetworkSettings... (splitTunnel=\(splitOn))")
 
         setTunnelNetworkSettings(settings) { [weak self] error in
             guard let self = self else { return }
@@ -305,6 +306,76 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 self.logger.info("Tunnel setup complete!")
             }
             self.pendingCompletion = nil
+        }
+    }
+
+    /// Build tunnel settings, honoring the split-tunnel policy.
+    private func makeNetworkSettings(for config: ConfigPush) -> NEPacketTunnelNetworkSettings {
+        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: config.gateway)
+        let ipv4 = NEIPv4Settings(addresses: [config.assignedIP], subnetMasks: [config.subnetMask])
+
+        if config.splitTunnel ?? false {
+            // Split tunnel: only the policy's routes go through the VPN.
+            ipv4.includedRoutes = buildSplitRoutes(config)
+        } else {
+            // Full tunnel: everything through the VPN, minus the server itself
+            // so the control connection keeps working.
+            ipv4.includedRoutes = [NEIPv4Route.default()]
+            let serverRoute = NEIPv4Route(destinationAddress: serverHost, subnetMask: "255.255.255.255")
+            ipv4.excludedRoutes = [serverRoute]
+        }
+
+        settings.ipv4Settings = ipv4
+
+        // Route DNS through the tunnel so answers are observable for domain learning.
+        settings.dnsSettings = NEDNSSettings(servers: config.dns)
+        settings.dnsSettings?.matchDomains = [""]
+        settings.mtu = NSNumber(value: config.mtu)
+        return settings
+    }
+
+    private func buildSplitRoutes(_ config: ConfigPush) -> [NEIPv4Route] {
+        var routes: [NEIPv4Route] = []
+        // Static CIDRs + server-resolved (concrete) domain IPs.
+        for cidr in config.includedRoutes ?? [] {
+            if let c = CidrUtils.parse(cidr) {
+                routes.append(NEIPv4Route(destinationAddress: c.address,
+                                          subnetMask: CidrUtils.mask(forPrefix: c.prefix)))
+            }
+        }
+        // Wildcard/CDN domains: route the DNS servers (so lookups are seen) plus
+        // the exact IPs we have learned by snooping DNS answers.
+        if let matcher = domainMatcher, !matcher.isEmpty {
+            for dns in config.dns where CidrUtils.parse(dns) != nil {
+                routes.append(NEIPv4Route(destinationAddress: dns, subnetMask: "255.255.255.255"))
+            }
+            for ip in dynamicRoutes {
+                routes.append(NEIPv4Route(destinationAddress: ip, subnetMask: "255.255.255.255"))
+            }
+        }
+        logger.info("Split tunnel: \(routes.count) route(s), \((config.includedDomains ?? []).count) domain rule(s)")
+        return routes
+    }
+
+    /// Re-apply settings after learning new split routes (no reader restart).
+    private func reapplyRoutes() {
+        guard let config = tunnelConfig else { return }
+        setTunnelNetworkSettings(makeNetworkSettings(for: config)) { [weak self] error in
+            if let error = error {
+                self?.logger.error("Failed to re-apply split routes: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Snoop DNS answers for matched domains and route the exact IPs the client
+    /// resolved (handles CDN/wildcard domains by hostname).
+    private func maybeLearnRoute(_ packet: Data) {
+        guard let matcher = domainMatcher, !matcher.isEmpty else { return }
+        guard let dns = DnsSniffer.parse(packet), matcher.matches(dns.qname) else { return }
+        let added = dns.addresses.filter { dynamicRoutes.insert($0).inserted }
+        if !added.isEmpty {
+            logger.info("Split tunnel: learned \(added.count) route(s) for \(dns.qname)")
+            reapplyRoutes()
         }
     }
 
@@ -332,5 +403,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let proto: NSNumber = version == 6 ? NSNumber(value: AF_INET6) : NSNumber(value: AF_INET)
 
         packetFlow.writePackets([data], withProtocols: [proto])
+
+        // Learn CDN/wildcard-domain IPs from DNS answers under split tunnel.
+        if version == 4 {
+            maybeLearnRoute(data)
+        }
     }
 }
