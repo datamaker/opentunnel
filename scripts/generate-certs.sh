@@ -4,7 +4,7 @@
 
 set -e
 
-CERT_DIR="../server/certs"
+CERT_DIR="../certs"
 DAYS_VALID=365
 KEY_SIZE=4096
 

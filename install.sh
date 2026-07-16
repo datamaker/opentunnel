@@ -7,7 +7,7 @@
 set -e
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/opentunnel}"
-DOCKER_IMAGE="datamaker/opentunnel:latest"
+DOCKER_IMAGE="datamaker/opentunnel:rust"
 VPN_SUBNET="10.8.0.0"
 
 echo "
@@ -44,11 +44,14 @@ cd "$INSTALL_DIR"
 DB_PASSWORD=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 24)
 JWT_SECRET=$(openssl rand -base64 32)
 
+# Fetch the DB schema (the Rust server does not auto-create it)
+curl -fsSL https://raw.githubusercontent.com/datamaker/opentunnel/main/server-rust/schema.sql -o schema.sql
+
 # Create docker-compose.yml
 cat > docker-compose.yml << 'EOF'
 services:
   vpn:
-    image: datamaker/opentunnel:latest
+    image: datamaker/opentunnel:rust
     container_name: opentunnel-vpn
     restart: unless-stopped
     network_mode: host
@@ -78,6 +81,7 @@ services:
       - POSTGRES_DB=vpn
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U vpn -h localhost"]
       interval: 5s

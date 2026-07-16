@@ -13,9 +13,9 @@ build/
 .env.*.local
 
 # Certificates (sensitive)
-server/certs/*.key
-server/certs/*.crt
-server/certs/*.pem
+certs/*.key
+certs/*.crt
+certs/*.pem
 
 # Logs
 logs/
@@ -68,3 +68,4 @@ clients/macos/build-run/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+
