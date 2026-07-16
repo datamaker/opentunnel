@@ -62,7 +62,7 @@ class VPNManager {
     }
 
     // App Group identifier for sharing data with extension
-    private let appGroupIdentifier = "group.com.vpnclient.ios"
+    private let appGroupIdentifier = "group.kr.co.datasee.VPNClient"
 
     // MARK: - Initialization
     private init() {
@@ -111,7 +111,7 @@ class VPNManager {
 
         // Create protocol configuration
         let protocolConfiguration = NETunnelProviderProtocol()
-        protocolConfiguration.providerBundleIdentifier = "com.vpnclient.ios.PacketTunnelExtension"
+        protocolConfiguration.providerBundleIdentifier = "kr.co.datasee.VPNClient.PacketTunnel"
         protocolConfiguration.serverAddress = serverAddress
 
         // Store configuration in provider configuration
