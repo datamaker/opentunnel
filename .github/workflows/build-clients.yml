@@ -24,11 +24,15 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
+      - name: Compute version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then echo "APP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"; else echo "APP_VERSION=0.0.0" >> "$GITHUB_ENV"; fi
+
       - name: Build APK
         working-directory: clients/android
         run: |
           chmod +x ./gradlew
-          ./gradlew assembleRelease --no-daemon
+          ./gradlew assembleRelease --no-daemon -PversionName=$APP_VERSION -PversionCode=${{ github.run_number }}
 
       - name: Sign APK
         uses: r0adkll/sign-android-release@v1
@@ -64,10 +68,15 @@ jobs:
           Expand-Archive wintun.zip -DestinationPath wintun
           Copy-Item wintun/wintun/bin/amd64/wintun.dll clients/windows/VPNClient/
 
+      - name: Compute version
+        run: |
+          if ("$env:GITHUB_REF" -like "refs/tags/v*") { $v = $env:GITHUB_REF_NAME -replace '^v','' } else { $v = "0.0.0" }
+          "APP_VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Build Windows EXE
         working-directory: clients/windows
         run: |
-          dotnet publish VPNClient/VPNClient.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish
+          dotnet publish VPNClient/VPNClient.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:Version=$env:APP_VERSION -o ./publish
 
       - name: Copy WinTun to output
         run: |
@@ -80,7 +89,7 @@ jobs:
       - name: Build Installer
         working-directory: clients/windows
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$env:APP_VERSION installer.iss
 
       - name: Upload Installer
         uses: actions/upload-artifact@v7

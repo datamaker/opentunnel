@@ -2,7 +2,9 @@
 ; Requires Inno Setup 6.0 or later
 
 #define MyAppName "OpenTunnel"
-#define MyAppVersion "1.0.3"
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.0"
+#endif
 #define MyAppPublisher "OpenTunnel"
 #define MyAppURL "https://github.com/datamaker/opentunnel"
 #define MyAppExeName "VPNClient.exe"
