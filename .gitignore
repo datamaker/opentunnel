@@ -13,9 +13,9 @@ build/
 .env.*.local
 
 # Certificates (sensitive)
-server/certs/*.key
-server/certs/*.crt
-server/certs/*.pem
+certs/*.key
+certs/*.crt
+certs/*.pem
 
 # Logs
 logs/
@@ -68,3 +68,9 @@ clients/macos/build-run/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+
+# macos-cli build outputs (binaries — build locally, don't commit)
+clients/macos-cli/opentunnel-cli
+clients/macos-cli/simple-test
+clients/macos-cli/vpn-test
+clients/macos-cli/*.zip

@@ -32,8 +32,8 @@ A lightweight, open-source VPN solution built from scratch. OpenTunnel provides 
 ┌───────────────────────────▼─────────────────────────────────────┐
 │                    VPN Server (Docker)                          │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
-│  │ TLS Server  │  │ TUN Bridge  │  │   NAT/FW    │             │
-│  │  (Node.js)  │  │  (Python)   │  │ (iptables)  │             │
+│  │ TLS Server  │  │ TUN Device  │  │   NAT/FW    │             │
+│  │   (Rust)    │  │  (native)   │  │ (iptables)  │             │
 │  └─────────────┘  └─────────────┘  └─────────────┘             │
 │                          │                                      │
 │                   ┌──────▼──────┐                               │
@@ -80,7 +80,7 @@ docker run -d \
   -p 1194:1194 \
   -e DB_HOST=opentunnel-db \
   -e DB_PASSWORD=your-secure-password \
-  datamaker/opentunnel:latest
+  datamaker/opentunnel:rust
 
 # Enable IP forwarding on host
 sudo sysctl -w net.ipv4.ip_forward=1
@@ -272,55 +272,53 @@ docker inspect opentunnel-vpn | grep -A5 CapAdd
 ```bash
 # Clone repository
 git clone https://github.com/datamaker/opentunnel.git
-cd opentunnel/server
+cd opentunnel/server-rust
 
-# Install dependencies
-npm install
+# Build (Linux, real kernel TUN)
+cargo build --release --features tun-device
 
-# Build TypeScript
-npm run build
-
-# Run in development
-npm run dev
+# Run (needs certs at ./certs/server.{crt,key} and a reachable Postgres)
+LOG_LEVEL=debug DB_HOST=localhost DB_PASSWORD=vpnpassword \
+  cargo run --release --features tun-device
 ```
 
 ### Building Docker Image
 
 ```bash
-cd server
-docker build -t opentunnel:dev .
+cd server-rust
+docker build -t opentunnel:rust .
 
 # Test locally
 docker run --rm -it \
   --cap-add=NET_ADMIN \
   --device=/dev/net/tun \
   -p 1194:1194 \
-  opentunnel:dev
+  opentunnel:rust
 ```
 
 ### Project Structure
 
 ```
 opentunnel/
-├── server/                 # Node.js VPN server
+├── server-rust/            # Rust VPN server
 │   ├── src/
-│   │   ├── index.ts       # Entry point
-│   │   ├── config/        # Configuration
-│   │   ├── tun/           # TUN device management
-│   │   ├── crypto/        # TLS server
+│   │   ├── main.rs        # Entry point
+│   │   ├── config.rs      # Configuration
+│   │   ├── tun.rs         # Native kernel TUN device
+│   │   ├── tls.rs         # TLS server (rustls)
 │   │   ├── protocol/      # VPN protocol
-│   │   ├── routing/       # Packet routing & NAT
+│   │   ├── routing/       # Packet routing
 │   │   ├── session/       # Session management
-│   │   ├── auth/          # Authentication
-│   │   └── db/            # Database
-│   ├── tun-bridge.py      # Python TUN bridge
+│   │   ├── split.rs       # Split-tunnel policy
+│   │   ├── auth.rs        # Authentication
+│   │   └── db.rs          # Database
+│   ├── schema.sql         # PostgreSQL schema
 │   ├── Dockerfile
-│   └── package.json
+│   └── Cargo.toml
 │
 ├── clients/
-│   ├── ios/               # iOS client (Swift)
 │   ├── android/           # Android client (Kotlin)
-│   ├── macos/             # macOS client (Swift)
+│   ├── macos/             # macOS + iOS client (Swift, multiplatform)
 │   └── windows/           # Windows client (C#)
 │
 ├── install.sh             # One-line installer
@@ -354,5 +352,5 @@ Contributions are welcome! Please:
 ## Acknowledgments
 
 - Inspired by OpenVPN architecture
-- Built with Node.js, Python, Swift, Kotlin, and C#
+- Built with Rust, Swift, Kotlin, and C#
 - Uses PostgreSQL for reliable data storage
