@@ -14,10 +14,14 @@ import com.vpn.client.MainActivity
 import com.vpn.client.R
 import com.vpn.client.network.TlsConnection
 import com.vpn.client.protocol.*
+import com.vpn.client.split.CidrUtils
+import com.vpn.client.split.DnsSniffer
+import com.vpn.client.split.DomainMatcher
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -55,6 +59,17 @@ class MyVpnService : VpnService() {
 
     // VPN configuration received from server
     private var vpnConfig: VpnConfig? = null
+
+    // Tunnel I/O streams over the current interface fd. Volatile so they can be
+    // swapped atomically when the interface is re-established for split routing.
+    @Volatile private var tunInput: FileInputStream? = null
+    @Volatile private var tunOutput: FileOutputStream? = null
+
+    // Split-tunnel: hostname matcher for domain rules, and the set of IPs learned
+    // by sniffing DNS answers for those domains (dynamic /32 routes).
+    private var domainMatcher: DomainMatcher? = null
+    private val dynamicRoutes = java.util.Collections.synchronizedSet(HashSet<String>())
+    private val reestablishMutex = Mutex()
 
     override fun onCreate() {
         super.onCreate()
@@ -107,13 +122,19 @@ class MyVpnService : VpnService() {
                 // Receive VPN configuration (sent right after auth response)
                 val config = receiveConfiguration()
                 vpnConfig = config
+                domainMatcher = if (config.splitTunnel && config.includedDomains.isNotEmpty()) {
+                    DomainMatcher(config.includedDomains)
+                } else {
+                    null
+                }
+                dynamicRoutes.clear()
 
                 // Build and establish VPN interface
-                vpnInterface = buildVpnInterface(config)
-
-                if (vpnInterface == null) {
-                    throw Exception("Failed to establish VPN interface")
-                }
+                val iface = buildVpnInterface(config)
+                    ?: throw Exception("Failed to establish VPN interface")
+                vpnInterface = iface
+                tunInput = FileInputStream(iface.fileDescriptor)
+                tunOutput = FileOutputStream(iface.fileDescriptor)
 
                 updateNotification("Connected to $serverAddress")
 
@@ -162,6 +183,10 @@ class MyVpnService : VpnService() {
 
                 vpnInterface?.close()
                 vpnInterface = null
+                tunInput = null
+                tunOutput = null
+                domainMatcher = null
+                dynamicRoutes.clear()
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error during VPN shutdown", e)
@@ -227,13 +252,74 @@ class MyVpnService : VpnService() {
             builder.addDnsServer(dns)
         }
 
-        // Route all traffic through VPN
-        builder.addRoute("0.0.0.0", 0)
+        if (config.splitTunnel) {
+            applySplitRoutes(builder, config)
+        } else {
+            // Full tunnel: route everything through the VPN.
+            builder.addRoute("0.0.0.0", 0)
+        }
 
         // Exclude VPN server from routing to prevent routing loops
         builder.addDisallowedApplication(packageName)
 
         return builder.establish()
+    }
+
+    /**
+     * Split tunneling: route only the server-provided include list plus any IPs
+     * we've learned by sniffing DNS answers for matched domains.
+     */
+    private fun applySplitRoutes(builder: Builder, config: VpnConfig) {
+        var routeCount = 0
+
+        // Static CIDRs + server-resolved (dedicated-IP) domain routes.
+        config.includedRoutes.forEach { cidr ->
+            CidrUtils.parse(cidr)?.let { builder.addRoute(it.address, it.prefix); routeCount++ }
+        }
+
+        val matcher = domainMatcher
+        if (matcher != null && !matcher.isEmpty()) {
+            // Route DNS servers through the tunnel so their answers pass through
+            // readFromServer, where we snoop them for domain-based rules. This is
+            // what makes CDN domains work: we route the exact IPs the client
+            // resolves, not a stale/geo-wrong server-side guess.
+            config.dns.forEach { dns ->
+                CidrUtils.parse(dns)?.let { builder.addRoute(it.address, 32) }
+            }
+            // Dynamic /32 routes learned so far.
+            synchronized(dynamicRoutes) {
+                dynamicRoutes.forEach { ip -> builder.addRoute(ip, 32); routeCount++ }
+            }
+        }
+
+        Log.i(TAG, "Split tunnel: $routeCount route(s), ${config.includedDomains.size} domain rule(s)")
+        if (routeCount == 0 && (matcher == null || matcher.isEmpty())) {
+            Log.w(TAG, "Split tunnel enabled but no routes configured; no traffic will be tunneled")
+        }
+    }
+
+    /**
+     * Rebuild the interface with the current dynamic routes and atomically swap
+     * the tunnel fd/streams. Called when DNS sniffing learns a new IP for a
+     * matched domain.
+     */
+    private suspend fun reestablishInterface() = reestablishMutex.withLock {
+        if (!isRunning.get()) return@withLock
+        val config = vpnConfig ?: return@withLock
+        try {
+            val old = vpnInterface
+            val iface = buildVpnInterface(config) ?: run {
+                Log.e(TAG, "Re-establish failed to build interface")
+                return@withLock
+            }
+            vpnInterface = iface
+            tunInput = FileInputStream(iface.fileDescriptor)
+            tunOutput = FileOutputStream(iface.fileDescriptor)
+            old?.close() // invalidates old streams; the tunnel loops re-fetch
+            Log.i(TAG, "Interface re-established with ${dynamicRoutes.size} dynamic route(s)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Re-establish error", e)
+        }
     }
 
     private fun getSubnetPrefix(subnetMask: String): Int {
@@ -268,34 +354,36 @@ class MyVpnService : VpnService() {
     }
 
     private suspend fun readFromTunnel() = withContext(Dispatchers.IO) {
-        val buffer = ByteBuffer.allocate(READ_BUFFER_SIZE)
-        val vpnInput = FileInputStream(vpnInterface?.fileDescriptor)
+        val buffer = ByteArray(READ_BUFFER_SIZE)
 
-        try {
-            while (isRunning.get() && isActive) {
-                buffer.clear()
-                val length = vpnInput.read(buffer.array())
-
+        while (isRunning.get() && isActive) {
+            val input = tunInput
+            if (input == null) {
+                delay(50)
+                continue
+            }
+            try {
+                val length = input.read(buffer)
                 if (length > 0) {
-                    val packet = ByteArray(length)
-                    buffer.get(packet, 0, length)
-
-                    // Send packet to server
+                    val packet = buffer.copyOf(length)
                     tlsConnection?.send(VpnMessageType.DATA_PACKET, packet)
                     bytesSent.addAndGet(length.toLong())
                 }
-            }
-        } catch (e: Exception) {
-            if (isRunning.get()) {
+            } catch (e: Exception) {
+                if (!isRunning.get()) break
+                // A read failure caused by a re-establishment swap is expected —
+                // the fd changed under us. Pick up the new stream and continue.
+                if (reestablishMutex.isLocked || tunInput !== input) {
+                    continue
+                }
                 Log.e(TAG, "Error reading from tunnel", e)
                 handleConnectionError(e)
+                break
             }
         }
     }
 
     private suspend fun readFromServer() = withContext(Dispatchers.IO) {
-        val vpnOutput = FileOutputStream(vpnInterface?.fileDescriptor)
-
         try {
             while (isRunning.get() && isActive) {
                 val connection = tlsConnection ?: break
@@ -304,8 +392,9 @@ class MyVpnService : VpnService() {
 
                 when (type) {
                     VpnMessageType.DATA_PACKET -> {
-                        vpnOutput.write(payload)
+                        tunOutput?.write(payload)
                         bytesReceived.addAndGet(payload.size.toLong())
+                        maybeLearnRoute(payload)
                     }
                     VpnMessageType.KEEPALIVE -> {
                         // Respond with keepalive ack
@@ -330,6 +419,25 @@ class MyVpnService : VpnService() {
                 Log.e(TAG, "Error reading from server", e)
                 handleConnectionError(e)
             }
+        }
+    }
+
+    /**
+     * For split tunneling with domain rules: inspect a packet coming from the
+     * server for a DNS answer, and if it resolves a matched domain to a new IP,
+     * add a route for it and re-establish the interface. This is what makes CDN
+     * domains (CloudFront/Cloudflare) route correctly — we tunnel exactly the IPs
+     * the client actually resolved, by hostname.
+     */
+    private fun maybeLearnRoute(packet: ByteArray) {
+        val matcher = domainMatcher ?: return
+        if (matcher.isEmpty()) return
+        val dns = DnsSniffer.parse(packet) ?: return
+        if (!matcher.matches(dns.qname)) return
+        val added = dns.addresses.filter { dynamicRoutes.add(it) }
+        if (added.isNotEmpty()) {
+            Log.i(TAG, "Split tunnel: learned ${added.size} route(s) for ${dns.qname}: $added")
+            serviceScope.launch { reestablishInterface() }
         }
     }
 

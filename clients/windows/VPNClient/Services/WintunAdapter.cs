@@ -149,6 +149,17 @@ public class WintunAdapter : IDisposable
             ipAddress, gateway, string.Join(", ", dns ?? Array.Empty<string>()), mtu);
     }
 
+    /// <summary>
+    /// Add a route for a destination CIDR through this tunnel adapter (split tunneling).
+    /// </summary>
+    public async Task AddRouteAsync(string destination, int prefixLength)
+    {
+        await RunNetshCommandAsync(
+            $"interface ipv4 add route {destination}/{prefixLength} \"{ADAPTER_NAME}\"");
+        _logger.LogInformation("Added split route {Destination}/{Prefix} via {Adapter}",
+            destination, prefixLength, ADAPTER_NAME);
+    }
+
     private async Task RunNetshCommandAsync(string arguments)
     {
         var psi = new ProcessStartInfo

@@ -81,6 +81,12 @@ pub struct AuthResponse {
 }
 
 /// VPN configuration pushed to the client after successful authentication.
+///
+/// The `split_tunnel` / `included_*` fields drive destination-based routing:
+/// when `split_tunnel` is true the client should route only `included_routes`
+/// (IP CIDRs) and `included_domains` through the tunnel; when false it does a
+/// full tunnel (default route) and the include lists are empty. Older clients
+/// simply ignore the extra fields.
 #[derive(Debug, Clone, Serialize)]
 pub struct ConfigPush {
     #[serde(rename = "assignedIP")]
@@ -92,6 +98,12 @@ pub struct ConfigPush {
     pub mtu: u32,
     #[serde(rename = "keepaliveInterval")]
     pub keepalive_interval: u32,
+    #[serde(rename = "splitTunnel")]
+    pub split_tunnel: bool,
+    #[serde(rename = "includedRoutes")]
+    pub included_routes: Vec<String>,
+    #[serde(rename = "includedDomains")]
+    pub included_domains: Vec<String>,
 }
 
 /// Structured error payload.

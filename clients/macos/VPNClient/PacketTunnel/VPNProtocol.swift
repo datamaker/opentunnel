@@ -76,10 +76,15 @@ struct ConfigPush: VPNMessage, Codable {
     let gateway: String
     let dns: [String]
     let mtu: Int
+    // Split-tunnel policy (optional for backward compatibility with older servers).
+    let splitTunnel: Bool?
+    let includedRoutes: [String]?
+    let includedDomains: [String]?
 
     enum CodingKeys: String, CodingKey {
         case assignedIP
         case subnetMask, gateway, dns, mtu
+        case splitTunnel, includedRoutes, includedDomains
     }
 }
 

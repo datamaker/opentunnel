@@ -62,7 +62,15 @@ data class ConfigRequest(
  * VPN configuration pushed by server.
  *
  * JSON format:
- * {"assignedIP":"","subnetMask":"","gateway":"","dns":[],"mtu":1400}
+ * {"assignedIP":"","subnetMask":"","gateway":"","dns":[],"mtu":1400,
+ *  "splitTunnel":false,"includedRoutes":[],"includedDomains":[]}
+ *
+ * Split-tunnel fields (all optional for backward compatibility):
+ * - splitTunnel: when true, route only includedRoutes/includedDomains through
+ *   the VPN; when false, full tunnel (default route).
+ * - includedRoutes: IP CIDRs to tunnel (static + server-resolved domain IPs).
+ * - includedDomains: domains to tunnel, matched by hostname on the client
+ *   (handles CDN domains whose IPs the server can't pin down).
  */
 @Serializable
 data class VpnConfig(
@@ -70,7 +78,10 @@ data class VpnConfig(
     val subnetMask: String,
     val gateway: String,
     val dns: List<String>,
-    val mtu: Int = 1400
+    val mtu: Int = 1400,
+    val splitTunnel: Boolean = false,
+    val includedRoutes: List<String> = emptyList(),
+    val includedDomains: List<String> = emptyList()
 )
 
 /**
