@@ -40,6 +40,13 @@ class MyVpnService : VpnService() {
         private const val NOTIFICATION_ID = 1
         private const val KEEPALIVE_INTERVAL_MS = 30000L
         private const val READ_BUFFER_SIZE = 32767
+
+        // Live service state so the UI can re-sync after the app process is
+        // force-quit and relaunched (the VpnService keeps running in background).
+        @Volatile var isConnected: Boolean = false
+            private set
+        @Volatile var assignedIp: String = ""
+            private set
     }
 
     private var vpnInterface: ParcelFileDescriptor? = null
@@ -138,6 +145,10 @@ class MyVpnService : VpnService() {
 
                 updateNotification("Connected to $serverAddress")
 
+                // Publish live state so the UI can re-sync after an app restart.
+                isConnected = true
+                assignedIp = config.assignedIP
+
                 // Notify UI of successful connection
                 val successIntent = Intent("com.vpn.client.VPN_CONNECTED").apply {
                     setPackage(packageName)
@@ -165,6 +176,9 @@ class MyVpnService : VpnService() {
         if (!isRunning.getAndSet(false)) {
             return
         }
+
+        isConnected = false
+        assignedIp = ""
 
         serviceScope.launch {
             try {
