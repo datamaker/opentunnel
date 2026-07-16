@@ -273,12 +273,18 @@ public class TlsConnection : IDisposable
 
         _logger.LogWarning("Certificate validation warning: {Errors}", sslPolicyErrors);
 
-        // For development purposes, accept self-signed certificates
-        // TODO: In production, implement proper certificate pinning
-        if (sslPolicyErrors == SslPolicyErrors.RemoteCertificateChainErrors ||
-            sslPolicyErrors == SslPolicyErrors.RemoteCertificateNameMismatch)
+        // For development purposes, accept self-signed certificates.
+        // SslPolicyErrors is a [Flags] enum: the self-signed server cert
+        // (CN=opentunnel-vpn) reached via a different host triggers BOTH
+        // RemoteCertificateChainErrors AND RemoteCertificateNameMismatch, so an
+        // exact `==` on either flag alone fails. Accept as long as the only
+        // errors are chain/name mismatch (matches the iOS/macOS/Android clients).
+        // TODO: In production, implement proper certificate pinning.
+        var acceptable = SslPolicyErrors.RemoteCertificateChainErrors |
+                         SslPolicyErrors.RemoteCertificateNameMismatch;
+        if ((sslPolicyErrors & ~acceptable) == SslPolicyErrors.None)
         {
-            _logger.LogWarning("Accepting certificate with errors for development");
+            _logger.LogWarning("Accepting self-signed certificate for development");
             return true;
         }
 
