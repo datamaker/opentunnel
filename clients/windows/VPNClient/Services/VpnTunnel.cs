@@ -41,6 +41,13 @@ public class VpnTunnel : IDisposable
 
     public bool IsConnected { get; private set; }
 
+    // Details from the server's ConfigPush, surfaced for the Connection Details
+    // card (parity with the macOS/iOS clients).
+    public string? Gateway => _config?.Gateway;
+    public IReadOnlyList<string> DnsServers => _config?.Dns ?? Array.Empty<string>();
+    public int Mtu => _config?.Mtu ?? 0;
+    public bool SplitTunnel => _config?.SplitTunnel ?? false;
+
     public VpnTunnel(ILogger<VpnTunnel> logger, TlsConnection tlsConnection, WintunAdapter wintunAdapter)
     {
         _logger = logger;

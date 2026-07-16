@@ -271,6 +271,13 @@ public partial class MainView : UserControl
         ServerValueText.Text = $"{_viewModel.ServerAddress}:{_viewModel.ServerPort}";
         AssignedIpText.Text = string.IsNullOrEmpty(assignedIp) ? "--" : assignedIp;
 
+        // Config details from the server's ConfigPush (parity with macOS/iOS).
+        GatewayText.Text = string.IsNullOrEmpty(_vpnTunnel.Gateway) ? "--" : _vpnTunnel.Gateway;
+        DnsText.Text = _vpnTunnel.DnsServers.Count > 0
+            ? string.Join(", ", _vpnTunnel.DnsServers)
+            : "--";
+        MtuText.Text = _vpnTunnel.Mtu > 0 ? _vpnTunnel.Mtu.ToString() : "--";
+
         ConnectionDetailsCard.Visibility = Visibility.Visible;
         StatisticsCard.Visibility = Visibility.Visible;
     }

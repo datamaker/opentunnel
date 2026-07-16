@@ -107,7 +107,7 @@
                                        Foreground="{StaticResource TextPrimaryBrush}"/>
                         </Grid>
 
-                        <Grid>
+                        <Grid Margin="0,0,0,10">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
@@ -115,6 +115,43 @@
                             <TextBlock Text="Assigned IP" FontSize="13"
                                        Foreground="{StaticResource TextSecondaryBrush}"/>
                             <TextBlock x:Name="AssignedIpText" Grid.Column="1" Text="--"
+                                       FontSize="13" FontWeight="Medium" TextAlignment="Right"
+                                       Foreground="{StaticResource TextPrimaryBrush}"/>
+                        </Grid>
+
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Gateway" FontSize="13"
+                                       Foreground="{StaticResource TextSecondaryBrush}"/>
+                            <TextBlock x:Name="GatewayText" Grid.Column="1" Text="--"
+                                       FontSize="13" FontWeight="Medium" TextAlignment="Right"
+                                       Foreground="{StaticResource TextPrimaryBrush}"/>
+                        </Grid>
+
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="DNS" FontSize="13"
+                                       Foreground="{StaticResource TextSecondaryBrush}"/>
+                            <TextBlock x:Name="DnsText" Grid.Column="1" Text="--"
+                                       FontSize="13" FontWeight="Medium" TextAlignment="Right"
+                                       TextWrapping="Wrap"
+                                       Foreground="{StaticResource TextPrimaryBrush}"/>
+                        </Grid>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="MTU" FontSize="13"
+                                       Foreground="{StaticResource TextSecondaryBrush}"/>
+                            <TextBlock x:Name="MtuText" Grid.Column="1" Text="--"
                                        FontSize="13" FontWeight="Medium" TextAlignment="Right"
                                        Foreground="{StaticResource TextPrimaryBrush}"/>
                         </Grid>
