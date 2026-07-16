@@ -49,10 +49,10 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     val connectionState: StateFlow<VpnConnectionState> = _connectionState.asStateFlow()
 
     // Server Settings
-    private val _serverAddress = MutableStateFlow("20.196.137.41")
+    private val _serverAddress = MutableStateFlow("")
     val serverAddress: StateFlow<String> = _serverAddress.asStateFlow()
 
-    private val _serverPort = MutableStateFlow(1194)
+    private val _serverPort = MutableStateFlow(443)
     val serverPort: StateFlow<Int> = _serverPort.asStateFlow()
 
     // VPN Settings

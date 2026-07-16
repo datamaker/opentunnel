@@ -130,12 +130,17 @@ private fun ConnectionButton(
             .scale(scale)
             .clip(CircleShape)
             .background(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        buttonColor,
-                        buttonColor.copy(alpha = 0.7f)
+                brush = when (connectionState) {
+                    VpnConnectionState.CONNECTED -> Brush.linearGradient(
+                        colors = listOf(Color(0xFF007AFF), Color(0xFF32ADE6))
                     )
-                )
+                    else -> Brush.radialGradient(
+                        colors = listOf(
+                            buttonColor,
+                            buttonColor.copy(alpha = 0.7f)
+                        )
+                    )
+                }
             ),
         contentAlignment = Alignment.Center
     ) {
@@ -168,7 +173,7 @@ private fun ConnectionStatusText(connectionState: VpnConnectionState) {
     val statusText = when (connectionState) {
         VpnConnectionState.CONNECTED -> "Connected"
         VpnConnectionState.CONNECTING -> "Connecting..."
-        VpnConnectionState.DISCONNECTED -> "Not Connected"
+        VpnConnectionState.DISCONNECTED -> "Disconnected"
         VpnConnectionState.ERROR -> "Connection Error"
     }
 
@@ -189,7 +194,7 @@ private fun ConnectionStatusText(connectionState: VpnConnectionState) {
     if (connectionState == VpnConnectionState.DISCONNECTED) {
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = "Tap the button to connect",
+            text = "Tap Connect to secure your connection",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

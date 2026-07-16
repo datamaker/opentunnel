@@ -1,7 +1,9 @@
 package com.vpn.client.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -13,7 +15,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -35,8 +40,8 @@ fun LoginScreen(
 
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var serverAddress by remember { mutableStateOf("20.196.137.41") }
-    var serverPort by remember { mutableStateOf("1194") }
+    var serverAddress by remember { mutableStateOf("") }
+    var serverPort by remember { mutableStateOf("443") }
     var passwordVisible by remember { mutableStateOf(false) }
     var showAdvancedSettings by remember { mutableStateOf(false) }
 
@@ -60,13 +65,26 @@ fun LoginScreen(
         ) {
             Spacer(modifier = Modifier.height(48.dp))
 
-            // Logo/Icon
-            Icon(
-                imageVector = Icons.Filled.Shield,
-                contentDescription = null,
-                modifier = Modifier.size(80.dp),
-                tint = MaterialTheme.colorScheme.primary
+            // Brand gradient: blue -> cyan (iOS parity)
+            val brandGradient = Brush.linearGradient(
+                colors = listOf(Color(0xFF007AFF), Color(0xFF32ADE6))
             )
+
+            // Logo/Icon: white shield on a gradient-filled circle
+            Box(
+                modifier = Modifier
+                    .size(96.dp)
+                    .clip(CircleShape)
+                    .background(brandGradient),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Shield,
+                    contentDescription = null,
+                    modifier = Modifier.size(56.dp),
+                    tint = Color.White
+                )
+            }
 
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -255,6 +273,7 @@ fun LoginScreen(
                     Spacer(modifier = Modifier.height(24.dp))
 
                     // Login Button
+                    val loginEnabled = username.isNotBlank() && password.isNotBlank() && !isLoading
                     Button(
                         onClick = {
                             viewModel.login(
@@ -266,8 +285,16 @@ fun LoginScreen(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(56.dp),
-                        enabled = username.isNotBlank() && password.isNotBlank() && !isLoading,
+                            .height(56.dp)
+                            .then(
+                                if (loginEnabled)
+                                    Modifier.background(brandGradient, RoundedCornerShape(12.dp))
+                                else Modifier
+                            ),
+                        enabled = loginEnabled,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.Transparent
+                        ),
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         if (isLoading) {

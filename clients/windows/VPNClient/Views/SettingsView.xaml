@@ -38,7 +38,7 @@
                     <StackPanel>
                         <TextBlock Text="Start with Windows" FontSize="14"
                                    Foreground="{StaticResource TextPrimaryBrush}"/>
-                        <TextBlock Text="Launch VPN client when Windows starts"
+                        <TextBlock Text="Launch OpenTunnel when Windows starts"
                                    FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
                                    Margin="0,4,0,0"/>
                     </StackPanel>
