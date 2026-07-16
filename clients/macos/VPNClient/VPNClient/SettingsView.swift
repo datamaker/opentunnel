@@ -16,7 +16,7 @@ struct SettingsView: View {
     @StateObject private var vpnManager = VPNManager.shared
 
     @State private var serverAddress: String = ""
-    @State private var serverPort: String = "443"
+    @State private var serverPort: String = "1194"
     @State private var autoConnect: Bool = false
     @State private var connectOnWiFi: Bool = true
     @State private var killSwitch: Bool = false
@@ -77,7 +77,7 @@ struct SettingsView: View {
             HStack {
                 Text("Port")
                 Spacer()
-                TextField("443", text: $serverPort)
+                TextField("1194", text: $serverPort)
                     .multilineTextAlignment(.trailing)
                     .foregroundColor(.secondary)
                     .textFieldStyle(.plain)
@@ -264,7 +264,7 @@ struct SettingsView: View {
         }
 
         serverAddress = ""
-        serverPort = "443"
+        serverPort = "1194"
         autoConnect = false
         connectOnWiFi = true
         killSwitch = false

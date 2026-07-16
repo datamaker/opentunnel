@@ -12,8 +12,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
+// Brand gradient accent (iOS parity): blue #007AFF -> cyan #32ADE6
+val BrandBlue = Color(0xFF007AFF)
+val BrandCyan = Color(0xFF32ADE6)
+
 // Light Theme Colors
-private val LightPrimary = Color(0xFF0D6EFD)
+private val LightPrimary = Color(0xFF007AFF)
 private val LightOnPrimary = Color(0xFFFFFFFF)
 private val LightPrimaryContainer = Color(0xFFD8E2FF)
 private val LightOnPrimaryContainer = Color(0xFF001A42)
@@ -42,7 +46,7 @@ private val LightOnSurfaceVariant = Color(0xFF44474F)
 private val LightOutline = Color(0xFF74777F)
 
 // Dark Theme Colors
-private val DarkPrimary = Color(0xFFAEC6FF)
+private val DarkPrimary = Color(0xFF66B2FF)
 private val DarkOnPrimary = Color(0xFF002E6A)
 private val DarkPrimaryContainer = Color(0xFF004494)
 private val DarkOnPrimaryContainer = Color(0xFFD8E2FF)
@@ -125,7 +129,7 @@ private val DarkColorScheme = darkColorScheme(
 @Composable
 fun VpnClientTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {

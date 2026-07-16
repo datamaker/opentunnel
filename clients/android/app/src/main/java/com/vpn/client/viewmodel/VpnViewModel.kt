@@ -1,6 +1,7 @@
 package com.vpn.client.viewmodel
 
 import android.app.Application
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.vpn.client.network.TlsConnection
@@ -49,7 +50,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     val connectionState: StateFlow<VpnConnectionState> = _connectionState.asStateFlow()
 
     // Server Settings
-    private val _serverAddress = MutableStateFlow("20.196.137.41")
+    private val _serverAddress = MutableStateFlow("")
     val serverAddress: StateFlow<String> = _serverAddress.asStateFlow()
 
     private val _serverPort = MutableStateFlow(1194)
@@ -81,6 +82,20 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     private var connectionStartTime: Long = 0
     private var durationJob: Job? = null
 
+    // App-private session store so the user stays logged in across app restarts.
+    private val prefs = application.getSharedPreferences("vpn_session", Context.MODE_PRIVATE)
+
+    init {
+        // Restore a previous session on launch.
+        if (prefs.getBoolean("logged_in", false)) {
+            _username.value = prefs.getString("username", "") ?: ""
+            _password.value = prefs.getString("password", "") ?: ""
+            _serverAddress.value = prefs.getString("server_address", "") ?: ""
+            _serverPort.value = prefs.getInt("server_port", 1194)
+            _isLoggedIn.value = true
+        }
+    }
+
     fun login(username: String, password: String, serverAddress: String, serverPort: Int) {
         viewModelScope.launch {
             _isLoggingIn.value = true
@@ -95,6 +110,13 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 if (result.success) {
                     _sessionToken.value = result.sessionToken
                     _isLoggedIn.value = true
+                    prefs.edit()
+                        .putBoolean("logged_in", true)
+                        .putString("username", username)
+                        .putString("password", password)
+                        .putString("server_address", serverAddress)
+                        .putInt("server_port", serverPort)
+                        .apply()
                     _loginSuccess.emit(Unit)
                 } else {
                     _loginError.value = result.errorMessage ?: "Authentication failed"
@@ -146,6 +168,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
             _username.value = ""
             _password.value = ""
             _connectionState.value = VpnConnectionState.DISCONNECTED
+            prefs.edit().clear().apply()
             stopDurationTimer()
         }
     }

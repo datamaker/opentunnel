@@ -15,6 +15,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -94,6 +95,14 @@ class MainActivity : ComponentActivity() {
                 ) {
                     val viewModel: VpnViewModel = viewModel()
                     vpnViewModel = viewModel
+
+                    // The VpnService can still be connected after an app restart —
+                    // re-sync the UI to its live state instead of showing Disconnected.
+                    LaunchedEffect(Unit) {
+                        if (MyVpnService.isConnected) {
+                            viewModel.onVpnConnected(MyVpnService.assignedIp)
+                        }
+                    }
 
                     val navController = rememberNavController()
                     val isLoggedIn by viewModel.isLoggedIn.collectAsState()

@@ -39,7 +39,7 @@
 
                 <!-- Logo and Title -->
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Ellipse Width="40" Height="40" Fill="{StaticResource PrimaryBrush}"/>
+                    <Ellipse Width="40" Height="40" Fill="{StaticResource BrandGradientBrush}"/>
                     <TextBlock Text="OpenTunnel" FontSize="20" FontWeight="SemiBold"
                                Foreground="{StaticResource TextPrimaryBrush}"
                                Margin="12,0,0,0" VerticalAlignment="Center"/>
@@ -109,7 +109,7 @@
                                 </Grid.ColumnDefinitions>
 
                                 <StackPanel Grid.Column="0">
-                                    <TextBlock Text="Download" FontSize="12"
+                                    <TextBlock Text="Downloaded" FontSize="12"
                                                Foreground="{StaticResource TextSecondaryBrush}"/>
                                     <TextBlock x:Name="DownloadText" Text="0 B/s"
                                                FontSize="14" FontWeight="SemiBold"
@@ -118,7 +118,7 @@
                                 </StackPanel>
 
                                 <StackPanel Grid.Column="1">
-                                    <TextBlock Text="Upload" FontSize="12"
+                                    <TextBlock Text="Uploaded" FontSize="12"
                                                Foreground="{StaticResource TextSecondaryBrush}"/>
                                     <TextBlock x:Name="UploadText" Text="0 B/s"
                                                FontSize="14" FontWeight="SemiBold"

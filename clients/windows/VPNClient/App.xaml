@@ -4,10 +4,11 @@
              StartupUri="MainWindow.xaml">
     <Application.Resources>
         <ResourceDictionary>
-            <!-- Windows 11 Style Colors -->
-            <Color x:Key="PrimaryColor">#0078D4</Color>
-            <Color x:Key="PrimaryHoverColor">#106EBE</Color>
-            <Color x:Key="PrimaryPressedColor">#005A9E</Color>
+            <!-- OpenTunnel Brand Colors (iOS parity) -->
+            <Color x:Key="PrimaryColor">#007AFF</Color>
+            <Color x:Key="PrimaryHoverColor">#0066DB</Color>
+            <Color x:Key="PrimaryPressedColor">#0052B3</Color>
+            <Color x:Key="AccentCyanColor">#32ADE6</Color>
             <Color x:Key="BackgroundColor">#F3F3F3</Color>
             <Color x:Key="CardBackgroundColor">#FFFFFF</Color>
             <Color x:Key="TextPrimaryColor">#1A1A1A</Color>
@@ -18,6 +19,14 @@
             <Color x:Key="WarningColor">#FFB900</Color>
 
             <SolidColorBrush x:Key="PrimaryBrush" Color="{StaticResource PrimaryColor}"/>
+            <SolidColorBrush x:Key="AccentCyanBrush" Color="{StaticResource AccentCyanColor}"/>
+
+            <!-- Signature gradient: blue -> cyan (leading -> trailing) -->
+            <LinearGradientBrush x:Key="BrandGradientBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Color="{StaticResource PrimaryColor}" Offset="0"/>
+                <GradientStop Color="{StaticResource AccentCyanColor}" Offset="1"/>
+            </LinearGradientBrush>
+
             <SolidColorBrush x:Key="PrimaryHoverBrush" Color="{StaticResource PrimaryHoverColor}"/>
             <SolidColorBrush x:Key="PrimaryPressedBrush" Color="{StaticResource PrimaryPressedColor}"/>
             <SolidColorBrush x:Key="BackgroundBrush" Color="{StaticResource BackgroundColor}"/>
@@ -31,7 +40,7 @@
 
             <!-- Modern Button Style -->
             <Style x:Key="ModernButtonStyle" TargetType="Button">
-                <Setter Property="Background" Value="{StaticResource PrimaryBrush}"/>
+                <Setter Property="Background" Value="{StaticResource BrandGradientBrush}"/>
                 <Setter Property="Foreground" Value="White"/>
                 <Setter Property="BorderThickness" Value="0"/>
                 <Setter Property="Padding" Value="24,12"/>
