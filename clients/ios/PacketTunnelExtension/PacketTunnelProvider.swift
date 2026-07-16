@@ -45,7 +45,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private var dynamicRoutes: Set<String> = []
 
     // App group for sharing data with main app
-    private let appGroupIdentifier = "group.com.vpnclient.ios"
+    private let appGroupIdentifier = "group.kr.co.datasee.VPNClient"
 
     // Stream buffer for incoming data
     private var streamBuffer = StreamBuffer()
