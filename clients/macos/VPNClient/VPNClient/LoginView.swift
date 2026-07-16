@@ -15,7 +15,7 @@ struct LoginView: View {
     @State private var username = ""
     @State private var password = ""
     @State private var serverAddress = ""
-    @State private var serverPort = "443"
+    @State private var serverPort = "1194"
     @State private var rememberCredentials = true
     @State private var showingPassword = false
 

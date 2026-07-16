@@ -40,7 +40,7 @@ fun LoginScreen(
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var serverAddress by remember { mutableStateOf("") }
-    var serverPort by remember { mutableStateOf("443") }
+    var serverPort by remember { mutableStateOf("1194") }
     var passwordVisible by remember { mutableStateOf(false) }
     var rememberCredentials by remember { mutableStateOf(true) }
 
@@ -64,7 +64,7 @@ fun LoginScreen(
             username = username,
             password = password,
             serverAddress = serverAddress,
-            serverPort = serverPort.toIntOrNull() ?: 443
+            serverPort = serverPort.toIntOrNull() ?: 1194
         )
     }
 

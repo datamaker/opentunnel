@@ -76,7 +76,7 @@ fun SettingsScreen(
                 OutlinedTextField(
                     value = editedServerPort,
                     onValueChange = { editedServerPort = it.filter { c -> c.isDigit() } },
-                    placeholder = { Text("443") },
+                    placeholder = { Text("1194") },
                     leadingIcon = { Icon(Icons.Outlined.Numbers, contentDescription = null) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -97,7 +97,7 @@ fun SettingsScreen(
                     onClick = {
                         viewModel.updateServerSettings(
                             editedServerAddress,
-                            editedServerPort.toIntOrNull() ?: 443
+                            editedServerPort.toIntOrNull() ?: 1194
                         )
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -235,12 +235,12 @@ fun SettingsScreen(
                 TextButton(
                     onClick = {
                         // Reset to defaults using available ViewModel setters
-                        viewModel.updateServerSettings("", 443)
+                        viewModel.updateServerSettings("", 1194)
                         viewModel.setAutoReconnect(true)
                         viewModel.setKillSwitch(false)
                         viewModel.setSplitTunneling(false)
                         editedServerAddress = ""
-                        editedServerPort = "443"
+                        editedServerPort = "1194"
                         showResetConfirmation = false
                     }
                 ) {

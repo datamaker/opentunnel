@@ -63,11 +63,28 @@ final class AppSession: ObservableObject {
 
     // Stored connection details (not published — read on demand).
     var serverHost: String = ""
-    var serverPort: String = "443"
+    var serverPort: String = "1194"
     var username: String = ""
     var password: String = ""
 
     private let defaults = UserDefaults.standard
+
+    init() {
+        // Restore a previous session so the user stays logged in across app
+        // restarts. Requires "Remember credentials" (the password lives in the
+        // Keychain and is needed to connect from the main screen).
+        guard defaults.bool(forKey: "vpn_logged_in"),
+              defaults.bool(forKey: "vpn_remember_credentials"),
+              let host = defaults.string(forKey: "vpn_server_address"),
+              let user = defaults.string(forKey: "vpn_username"),
+              let pw = CredentialStore.password(account: user)
+        else { return }
+        serverHost = host
+        serverPort = defaults.string(forKey: "vpn_server_port") ?? "1194"
+        username = user
+        password = pw
+        isLoggedIn = true
+    }
 
     /// Validates + stores credentials and marks the session as logged in.
     func signIn(host: String, port: String, username: String, password: String, remember: Bool) {
@@ -86,6 +103,9 @@ final class AppSession: ObservableObject {
             defaults.removeObject(forKey: "vpn_username")
             CredentialStore.deletePassword(account: username)
         }
+        // Persist the logged-in state so the session survives an app quit (only
+        // when credentials are remembered — restoring needs the saved password).
+        defaults.set(remember, forKey: "vpn_logged_in")
 
         isLoggedIn = true
     }
@@ -94,6 +114,7 @@ final class AppSession: ObservableObject {
     /// Remembered credentials are kept so the login screen can pre-fill them.
     func logout() {
         VPNManager.shared.disconnect()
+        defaults.set(false, forKey: "vpn_logged_in")
         password = ""
         isLoggedIn = false
     }
