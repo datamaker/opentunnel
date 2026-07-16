@@ -57,6 +57,9 @@ Type: filesandordirs; Name: "{app}\logs"
 Type: filesandordirs; Name: "{localappdata}\VPNClient"
 
 [Code]
+var
+  ResultCode: Integer;
+
 function InitializeSetup(): Boolean;
 begin
   Result := True;
@@ -80,6 +83,3 @@ begin
     Exec('netsh', 'advfirewall firewall delete rule name="VPN Client"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
-
-var
-  ResultCode: Integer;
