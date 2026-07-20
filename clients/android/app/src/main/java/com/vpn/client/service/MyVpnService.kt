@@ -153,6 +153,9 @@ class MyVpnService : VpnService() {
                 val successIntent = Intent("com.vpn.client.VPN_CONNECTED").apply {
                     setPackage(packageName)
                     putExtra("assigned_ip", config.assignedIP)
+                    putExtra("gateway", config.gateway)
+                    putExtra("dns", config.dns.joinToString(", "))
+                    putExtra("mtu", config.mtu)
                 }
                 sendBroadcast(successIntent)
                 Log.i(TAG, "Sent VPN_CONNECTED broadcast with IP: ${config.assignedIP}")

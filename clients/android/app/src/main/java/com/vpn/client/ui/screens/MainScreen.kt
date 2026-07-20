@@ -51,6 +51,9 @@ fun MainScreen(
     val serverAddress by viewModel.serverAddress.collectAsState()
     val serverPort by viewModel.serverPort.collectAsState()
     val assignedIp by viewModel.assignedIp.collectAsState()
+    val gateway by viewModel.gateway.collectAsState()
+    val dnsServers by viewModel.dnsServers.collectAsState()
+    val mtu by viewModel.mtu.collectAsState()
     val bytesReceived by viewModel.bytesReceived.collectAsState()
     val bytesSent by viewModel.bytesSent.collectAsState()
     val connectionDuration by viewModel.connectionDuration.collectAsState()
@@ -79,7 +82,10 @@ fun MainScreen(
             if (isConnected) {
                 ConnectionDetailsCard(
                     serverAddress = "$serverAddress:$serverPort",
-                    assignedIp = assignedIp.ifBlank { "—" }
+                    assignedIp = assignedIp.ifBlank { "—" },
+                    gateway = gateway.ifBlank { "—" },
+                    dns = dnsServers.ifBlank { "—" },
+                    mtu = if (mtu > 0) mtu.toString() else "—"
                 )
 
                 StatisticsCard(
@@ -248,7 +254,10 @@ private fun ConnectionStatusCard(connectionState: VpnConnectionState) {
 @Composable
 private fun ConnectionDetailsCard(
     serverAddress: String,
-    assignedIp: String
+    assignedIp: String,
+    gateway: String,
+    dns: String,
+    mtu: String
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -271,6 +280,12 @@ private fun ConnectionDetailsCard(
             DetailRow(title = "Server", value = serverAddress)
             Spacer(modifier = Modifier.height(12.dp))
             DetailRow(title = "Assigned IP", value = assignedIp)
+            Spacer(modifier = Modifier.height(12.dp))
+            DetailRow(title = "Gateway", value = gateway)
+            Spacer(modifier = Modifier.height(12.dp))
+            DetailRow(title = "DNS", value = dns)
+            Spacer(modifier = Modifier.height(12.dp))
+            DetailRow(title = "MTU", value = mtu)
         }
     }
 }
