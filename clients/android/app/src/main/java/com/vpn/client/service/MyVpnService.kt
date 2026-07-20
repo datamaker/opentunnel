@@ -153,6 +153,9 @@ class MyVpnService : VpnService() {
                 val successIntent = Intent("com.vpn.client.VPN_CONNECTED").apply {
                     setPackage(packageName)
                     putExtra("assigned_ip", config.assignedIP)
+                    putExtra("gateway", config.gateway)
+                    putExtra("dns", config.dns.joinToString(", "))
+                    putExtra("mtu", config.mtu)
                 }
                 sendBroadcast(successIntent)
                 Log.i(TAG, "Sent VPN_CONNECTED broadcast with IP: ${config.assignedIP}")
@@ -406,7 +409,7 @@ class MyVpnService : VpnService() {
 
                 when (type) {
                     VpnMessageType.DATA_PACKET -> {
-                        tunOutput?.write(payload)
+                        writeToTun(payload)
                         bytesReceived.addAndGet(payload.size.toLong())
                         maybeLearnRoute(payload)
                     }
@@ -443,6 +446,23 @@ class MyVpnService : VpnService() {
      * domains (CloudFront/Cloudflare) route correctly — we tunnel exactly the IPs
      * the client actually resolved, by hostname.
      */
+    /**
+     * Write a packet to the current tunnel fd, tolerating the transient failure
+     * window while the interface is being re-established (the fd is swapped under
+     * us). Only a genuine, non-swap write failure is propagated as fatal.
+     */
+    private fun writeToTun(payload: ByteArray) {
+        val out = tunOutput ?: return
+        try {
+            out.write(payload)
+        } catch (e: Exception) {
+            if (isRunning.get() && !reestablishMutex.isLocked && tunOutput === out) {
+                throw e
+            }
+            // else: fd swapped during re-establishment — drop this packet.
+        }
+    }
+
     private fun maybeLearnRoute(packet: ByteArray) {
         val matcher = domainMatcher ?: return
         if (matcher.isEmpty()) return

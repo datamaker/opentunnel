@@ -25,6 +25,14 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private var domainMatcher: DomainMatcher?
     private var dynamicRoutes: Set<String> = []
 
+    // Keepalive / liveness. Without a periodic keepalive the server drops an
+    // idle connection after ~120s; this also gives dead-peer detection. Matches
+    // the Android/Windows clients' behavior.
+    private var keepaliveTimer: DispatchSourceTimer?
+    private var lastActivity = Date()
+    private let keepaliveInterval: TimeInterval = 20
+    private let idleTimeout: TimeInterval = 90
+
     private let logger = Logger(subsystem: "com.vpnclient.tunnel", category: "Provider")
 
     // MARK: - Tunnel Lifecycle
@@ -64,9 +72,39 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         logger.info("Stopping tunnel: \(String(describing: reason))")
         isRunning = false
+        stopKeepalive()
+        // Best-effort: tell the server we're leaving so it releases the session
+        // promptly (parity with the Android/Windows clients).
+        sendMessage(Disconnect())
         connection?.cancel()
         connection = nil
         completionHandler()
+    }
+
+    // MARK: - Keepalive
+
+    private func startKeepalive() {
+        stopKeepalive()
+        let timer = DispatchSource.makeTimerSource(queue: .global())
+        timer.schedule(deadline: .now() + keepaliveInterval, repeating: keepaliveInterval)
+        timer.setEventHandler { [weak self] in
+            guard let self = self, self.isRunning else { return }
+            if Date().timeIntervalSince(self.lastActivity) > self.idleTimeout {
+                self.logger.error("Keepalive timeout — no activity, stopping tunnel")
+                self.cancelTunnelWithError(NSError(
+                    domain: "VPN", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Keepalive timeout"]))
+                return
+            }
+            self.sendMessage(KeepAlive())
+        }
+        timer.resume()
+        keepaliveTimer = timer
+    }
+
+    private func stopKeepalive() {
+        keepaliveTimer?.cancel()
+        keepaliveTimer = nil
     }
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
@@ -264,10 +302,15 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             configureTunnel(config: config)
 
         case let packet as DataPacket:
+            lastActivity = Date()
             handleInboundPacket(packet.payload)
 
         case is KeepAlive:
+            lastActivity = Date()
             sendMessage(KeepAliveAck())
+
+        case is KeepAliveAck:
+            lastActivity = Date()
 
         default:
             break
@@ -299,6 +342,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 self.logger.info("Tunnel configured successfully!")
                 self.logger.info("Setting isRunning = true")
                 self.isRunning = true
+                self.lastActivity = Date()
+                self.startKeepalive()
                 self.logger.info("Starting packet reading...")
                 self.startReadingPackets()
                 self.logger.info("Calling pendingCompletion(nil)...")
@@ -321,8 +366,11 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             // Full tunnel: everything through the VPN, minus the server itself
             // so the control connection keeps working.
             ipv4.includedRoutes = [NEIPv4Route.default()]
-            let serverRoute = NEIPv4Route(destinationAddress: serverHost, subnetMask: "255.255.255.255")
-            ipv4.excludedRoutes = [serverRoute]
+            // Exclude the server's own address only when it's a literal IPv4 —
+            // an NEIPv4Route built from a hostname is invalid and would be ignored.
+            if CidrUtils.parse(serverHost) != nil {
+                ipv4.excludedRoutes = [NEIPv4Route(destinationAddress: serverHost, subnetMask: "255.255.255.255")]
+            }
         }
 
         settings.ipv4Settings = ipv4

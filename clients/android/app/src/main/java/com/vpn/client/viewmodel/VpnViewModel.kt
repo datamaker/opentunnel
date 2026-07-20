@@ -70,6 +70,15 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     private val _assignedIp = MutableStateFlow("")
     val assignedIp: StateFlow<String> = _assignedIp.asStateFlow()
 
+    private val _gateway = MutableStateFlow("")
+    val gateway: StateFlow<String> = _gateway.asStateFlow()
+
+    private val _dnsServers = MutableStateFlow("")
+    val dnsServers: StateFlow<String> = _dnsServers.asStateFlow()
+
+    private val _mtu = MutableStateFlow(0)
+    val mtu: StateFlow<Int> = _mtu.asStateFlow()
+
     private val _bytesReceived = MutableStateFlow(0L)
     val bytesReceived: StateFlow<Long> = _bytesReceived.asStateFlow()
 
@@ -177,9 +186,12 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         _connectionState.value = VpnConnectionState.CONNECTING
     }
 
-    fun onVpnConnected(assignedIp: String) {
+    fun onVpnConnected(assignedIp: String, gateway: String = "", dns: String = "", mtu: Int = 0) {
         _connectionState.value = VpnConnectionState.CONNECTED
         _assignedIp.value = assignedIp
+        _gateway.value = gateway
+        _dnsServers.value = dns
+        _mtu.value = mtu
         connectionStartTime = System.currentTimeMillis()
         startDurationTimer()
     }
@@ -241,6 +253,9 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun resetConnectionStats() {
         _assignedIp.value = ""
+        _gateway.value = ""
+        _dnsServers.value = ""
+        _mtu.value = 0
         _bytesReceived.value = 0
         _bytesSent.value = 0
         _connectionDuration.value = "00:00:00"

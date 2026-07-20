@@ -40,8 +40,11 @@ class MainActivity : ComponentActivity() {
             when (intent?.action) {
                 "com.vpn.client.VPN_CONNECTED" -> {
                     val assignedIp = intent.getStringExtra("assigned_ip") ?: ""
+                    val gateway = intent.getStringExtra("gateway") ?: ""
+                    val dns = intent.getStringExtra("dns") ?: ""
+                    val mtu = intent.getIntExtra("mtu", 0)
                     Log.d("MainActivity", "VPN Connected with IP: $assignedIp")
-                    vpnViewModel.onVpnConnected(assignedIp)
+                    vpnViewModel.onVpnConnected(assignedIp, gateway, dns, mtu)
                 }
                 "com.vpn.client.VPN_ERROR" -> {
                     val errorMessage = intent.getStringExtra("error_message") ?: "Connection failed"

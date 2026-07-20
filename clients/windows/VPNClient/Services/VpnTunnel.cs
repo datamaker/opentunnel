@@ -34,7 +34,6 @@ public class VpnTunnel : IDisposable
     private long _bytesSent;
     private long _packetsReceived;
     private long _packetsSent;
-    private DateTime _lastStatsReset = DateTime.Now;
 
     public event EventHandler<ConnectionStateEventArgs>? ConnectionStateChanged;
     public event EventHandler<VpnErrorEventArgs>? ErrorOccurred;
@@ -67,6 +66,12 @@ public class VpnTunnel : IDisposable
 
         _cancellationTokenSource = new CancellationTokenSource();
         var cancellationToken = _cancellationTokenSource.Token;
+
+        // Reset per-session cumulative counters.
+        Interlocked.Exchange(ref _bytesReceived, 0);
+        Interlocked.Exchange(ref _bytesSent, 0);
+        Interlocked.Exchange(ref _packetsReceived, 0);
+        Interlocked.Exchange(ref _packetsSent, 0);
 
         try
         {
@@ -123,7 +128,8 @@ public class VpnTunnel : IDisposable
                 _config.SubnetMask ?? "255.255.255.0",
                 _config.Gateway!,
                 _config.Dns ?? new[] { "8.8.8.8", "8.8.4.4" },
-                _config.Mtu);
+                _config.Mtu,
+                _config.SplitTunnel);
 
             // Split tunneling: install routes only for the included destinations.
             if (_config.SplitTunnel)
@@ -331,6 +337,16 @@ public class VpnTunnel : IDisposable
                             MaybeLearnRoute(message.Payload);
                             break;
 
+                        case MessageType.Keepalive:
+                            // Server-originated keepalive — answer so it doesn't
+                            // consider us idle (parity with Android/macOS).
+                            await _tlsConnection.SendMessageAsync(new VpnMessage
+                            {
+                                Type = MessageType.KeepaliveAck,
+                                Payload = Array.Empty<byte>()
+                            });
+                            break;
+
                         case MessageType.KeepaliveAck:
                             _logger.LogDebug("Received keepalive ACK");
                             break;
@@ -430,23 +446,15 @@ public class VpnTunnel : IDisposable
     /// </summary>
     public VpnStats GetStats()
     {
-        var now = DateTime.Now;
-        var elapsed = (now - _lastStatsReset).TotalSeconds;
-
-        var stats = new VpnStats
+        // Cumulative totals for the current session (consistent with the other
+        // platform clients). Counters are reset in ConnectAsync, not here.
+        return new VpnStats
         {
-            BytesReceived = elapsed > 0 ? (long)(_bytesReceived / elapsed) : 0,
-            BytesSent = elapsed > 0 ? (long)(_bytesSent / elapsed) : 0,
-            PacketsReceived = _packetsReceived,
-            PacketsSent = _packetsSent
+            BytesReceived = Interlocked.Read(ref _bytesReceived),
+            BytesSent = Interlocked.Read(ref _bytesSent),
+            PacketsReceived = Interlocked.Read(ref _packetsReceived),
+            PacketsSent = Interlocked.Read(ref _packetsSent)
         };
-
-        // Reset counters
-        Interlocked.Exchange(ref _bytesReceived, 0);
-        Interlocked.Exchange(ref _bytesSent, 0);
-        _lastStatsReset = now;
-
-        return stats;
     }
 
     private void RaiseConnectionStateChanged(ConnectionState state, string? assignedIP)

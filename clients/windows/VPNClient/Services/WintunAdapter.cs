@@ -54,7 +54,7 @@ public class WintunAdapter : IDisposable
     /// <summary>
     /// Initialize the WinTun adapter with the specified configuration
     /// </summary>
-    public async Task InitializeAsync(string ipAddress, string subnetMask, string gateway, string[] dns, int mtu)
+    public async Task InitializeAsync(string ipAddress, string subnetMask, string gateway, string[] dns, int mtu, bool splitTunnel = false)
     {
         if (_isInitialized)
         {
@@ -105,7 +105,7 @@ public class WintunAdapter : IDisposable
         });
 
         // Configure the network interface
-        await ConfigureInterfaceAsync(ipAddress, subnetMask, gateway, dns, mtu);
+        await ConfigureInterfaceAsync(ipAddress, subnetMask, gateway, dns, mtu, splitTunnel);
 
         // Start the read/write tasks
         _cancellationTokenSource = new CancellationTokenSource();
@@ -117,7 +117,7 @@ public class WintunAdapter : IDisposable
     /// <summary>
     /// Configure the network interface with IP, gateway, DNS, etc.
     /// </summary>
-    private async Task ConfigureInterfaceAsync(string ipAddress, string subnetMask, string gateway, string[] dns, int mtu)
+    private async Task ConfigureInterfaceAsync(string ipAddress, string subnetMask, string gateway, string[] dns, int mtu, bool splitTunnel)
     {
         _logger.LogInformation("Configuring network interface");
 
@@ -128,8 +128,18 @@ public class WintunAdapter : IDisposable
             throw new WintunException("Failed to get adapter LUID");
         }
 
-        // Use netsh to configure the interface (more reliable than direct API calls)
-        await RunNetshCommandAsync($"interface ip set address name=\"{ADAPTER_NAME}\" static {ipAddress} {subnetMask} {gateway}");
+        // Use netsh to configure the interface (more reliable than direct API calls).
+        // In split-tunnel mode, do NOT set a gateway on the adapter — a gateway
+        // installs a default route that would capture ALL traffic and defeat
+        // split routing. Specific routes are added explicitly via AddRouteAsync.
+        if (splitTunnel)
+        {
+            await RunNetshCommandAsync($"interface ip set address name=\"{ADAPTER_NAME}\" static {ipAddress} {subnetMask}");
+        }
+        else
+        {
+            await RunNetshCommandAsync($"interface ip set address name=\"{ADAPTER_NAME}\" static {ipAddress} {subnetMask} {gateway}");
+        }
 
         // Configure DNS
         if (dns != null && dns.Length > 0)

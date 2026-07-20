@@ -152,8 +152,9 @@ public partial class MainView : UserControl
     private void StatsTimer_Tick(object? sender, EventArgs e)
     {
         var stats = _vpnTunnel.GetStats();
-        DownloadText.Text = FormatBytes(stats.BytesReceived) + "/s";
-        UploadText.Text = FormatBytes(stats.BytesSent) + "/s";
+        // Cumulative session totals (consistent with the other platform clients).
+        DownloadText.Text = FormatBytes(stats.BytesReceived);
+        UploadText.Text = FormatBytes(stats.BytesSent);
     }
 
     // MARK: - Actions
@@ -295,8 +296,8 @@ public partial class MainView : UserControl
         ConnectionDetailsCard.Visibility = Visibility.Collapsed;
         StatisticsCard.Visibility = Visibility.Collapsed;
         DurationText.Text = "00:00:00";
-        DownloadText.Text = "0 B/s";
-        UploadText.Text = "0 B/s";
+        DownloadText.Text = "0 B";
+        UploadText.Text = "0 B";
     }
 
     private void ApplyStatusColor(string colorKey)
@@ -307,17 +308,18 @@ public partial class MainView : UserControl
         StatusInner.Fill = new SolidColorBrush(color);
     }
 
+    // Matches the macOS client's formatBytes: base 1024, 2-decimal GB/MB,
+    // 1-decimal KB, integer bytes.
     private static string FormatBytes(long bytes)
     {
-        string[] sizes = { "B", "KB", "MB", "GB" };
-        int order = 0;
-        double size = bytes;
-        while (size >= 1024 && order < sizes.Length - 1)
-        {
-            order++;
-            size /= 1024;
-        }
-        return $"{size:0.##} {sizes[order]}";
+        double kb = bytes / 1024.0;
+        double mb = kb / 1024.0;
+        double gb = mb / 1024.0;
+
+        if (gb >= 1) return $"{gb:0.00} GB";
+        if (mb >= 1) return $"{mb:0.00} MB";
+        if (kb >= 1) return $"{kb:0.0} KB";
+        return $"{bytes} B";
     }
 
     /// <summary>

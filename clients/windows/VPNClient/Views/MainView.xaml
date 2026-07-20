@@ -183,7 +183,7 @@
                             </Grid.ColumnDefinitions>
 
                             <StackPanel Grid.Column="0" HorizontalAlignment="Center">
-                                <TextBlock x:Name="DownloadText" Text="0 B/s"
+                                <TextBlock x:Name="DownloadText" Text="0 B"
                                            FontSize="16" FontWeight="SemiBold"
                                            HorizontalAlignment="Center"
                                            Foreground="{StaticResource TextPrimaryBrush}"/>
@@ -193,7 +193,7 @@
                             </StackPanel>
 
                             <StackPanel Grid.Column="1" HorizontalAlignment="Center">
-                                <TextBlock x:Name="UploadText" Text="0 B/s"
+                                <TextBlock x:Name="UploadText" Text="0 B"
                                            FontSize="16" FontWeight="SemiBold"
                                            HorizontalAlignment="Center"
                                            Foreground="{StaticResource TextPrimaryBrush}"/>
