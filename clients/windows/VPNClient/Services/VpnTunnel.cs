@@ -128,7 +128,8 @@ public class VpnTunnel : IDisposable
                 _config.SubnetMask ?? "255.255.255.0",
                 _config.Gateway!,
                 _config.Dns ?? new[] { "8.8.8.8", "8.8.4.4" },
-                _config.Mtu);
+                _config.Mtu,
+                _config.SplitTunnel);
 
             // Split tunneling: install routes only for the included destinations.
             if (_config.SplitTunnel)
