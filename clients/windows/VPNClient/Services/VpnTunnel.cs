@@ -337,6 +337,16 @@ public class VpnTunnel : IDisposable
                             MaybeLearnRoute(message.Payload);
                             break;
 
+                        case MessageType.Keepalive:
+                            // Server-originated keepalive — answer so it doesn't
+                            // consider us idle (parity with Android/macOS).
+                            await _tlsConnection.SendMessageAsync(new VpnMessage
+                            {
+                                Type = MessageType.KeepaliveAck,
+                                Payload = Array.Empty<byte>()
+                            });
+                            break;
+
                         case MessageType.KeepaliveAck:
                             _logger.LogDebug("Received keepalive ACK");
                             break;
