@@ -409,9 +409,15 @@ class MyVpnService : VpnService() {
 
                 when (type) {
                     VpnMessageType.DATA_PACKET -> {
-                        writeToTun(payload)
                         bytesReceived.addAndGet(payload.size.toLong())
-                        maybeLearnRoute(payload)
+                        // Gate: if this is a DNS answer for a matched domain with
+                        // new IPs, re-establish the interface (installing the
+                        // route) BEFORE delivering the answer to the app, so its
+                        // first connection to the freshly-resolved IP uses the
+                        // tunnel instead of leaking (WAF 403).
+                        if (!maybeLearnRoute(payload)) {
+                            writeToTun(payload)
+                        }
                     }
                     VpnMessageType.KEEPALIVE -> {
                         // Respond with keepalive ack
@@ -463,16 +469,30 @@ class MyVpnService : VpnService() {
         }
     }
 
-    private fun maybeLearnRoute(packet: ByteArray) {
-        val matcher = domainMatcher ?: return
-        if (matcher.isEmpty()) return
-        val dns = DnsSniffer.parse(packet) ?: return
-        if (!matcher.matches(dns.qname)) return
+    /**
+     * Snoop a DNS answer for a matched (CDN/wildcard) domain. If it carries IPs
+     * we have not routed yet, re-establish the interface to install the routes
+     * and deliver the answer to the app only *after* they are active, then
+     * return true (the caller must not deliver the packet itself). Returns false
+     * for any packet that is not a gated DNS answer, which the caller delivers
+     * normally.
+     *
+     * Gating closes a race: the DNS answer reaches the app and the snooper at
+     * the same instant, so without it the app opens its connection to the
+     * freshly resolved IP before the route exists — the first request leaks
+     * outside the tunnel and the WAF rejects the client's real IP (403).
+     */
+    private suspend fun maybeLearnRoute(packet: ByteArray): Boolean {
+        val matcher = domainMatcher ?: return false
+        if (matcher.isEmpty()) return false
+        val dns = DnsSniffer.parse(packet) ?: return false
+        if (!matcher.matches(dns.qname)) return false
         val added = dns.addresses.filter { dynamicRoutes.add(it) }
-        if (added.isNotEmpty()) {
-            Log.i(TAG, "Split tunnel: learned ${added.size} route(s) for ${dns.qname}: $added")
-            serviceScope.launch { reestablishInterface() }
-        }
+        if (added.isEmpty()) return false
+        Log.i(TAG, "Split tunnel: learned ${added.size} route(s) for ${dns.qname}: $added")
+        reestablishInterface()
+        writeToTun(packet)
+        return true
     }
 
     private suspend fun sendKeepalive() = withContext(Dispatchers.IO) {

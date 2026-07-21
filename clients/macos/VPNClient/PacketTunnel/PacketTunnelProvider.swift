@@ -406,25 +406,37 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     /// Re-apply settings after learning new split routes (no reader restart).
-    private func reapplyRoutes() {
-        guard let config = tunnelConfig else { return }
+    /// `completion` fires once the new settings are active.
+    private func reapplyRoutes(completion: (() -> Void)? = nil) {
+        guard let config = tunnelConfig else { completion?(); return }
         setTunnelNetworkSettings(makeNetworkSettings(for: config)) { [weak self] error in
             if let error = error {
                 self?.logger.error("Failed to re-apply split routes: \(error.localizedDescription)")
             }
+            completion?()
         }
     }
 
-    /// Snoop DNS answers for matched domains and route the exact IPs the client
-    /// resolved (handles CDN/wildcard domains by hostname).
-    private func maybeLearnRoute(_ packet: Data) {
-        guard let matcher = domainMatcher, !matcher.isEmpty else { return }
-        guard let dns = DnsSniffer.parse(packet), matcher.matches(dns.qname) else { return }
+    /// Snoop a DNS answer for a matched (CDN/wildcard) domain. If it carries IPs
+    /// we have not routed yet, install the routes and deliver the answer to the
+    /// app only *after* they are active, then return true (the caller must not
+    /// deliver the packet itself). Returns false for any packet that is not a
+    /// gated DNS answer, which the caller should deliver normally.
+    ///
+    /// Gating closes a race: the DNS answer reaches the app and the snooper at
+    /// the same instant, so without it the app opens its connection to the
+    /// freshly resolved IP before the route exists — the first request leaks
+    /// outside the tunnel and the WAF rejects the client's real IP (403).
+    private func maybeLearnRoute(_ packet: Data, proto: NSNumber) -> Bool {
+        guard let matcher = domainMatcher, !matcher.isEmpty else { return false }
+        guard let dns = DnsSniffer.parse(packet), matcher.matches(dns.qname) else { return false }
         let added = dns.addresses.filter { dynamicRoutes.insert($0).inserted }
-        if !added.isEmpty {
-            logger.info("Split tunnel: learned \(added.count) route(s) for \(dns.qname)")
-            reapplyRoutes()
+        if added.isEmpty { return false }
+        logger.info("Split tunnel: learned \(added.count) route(s) for \(dns.qname)")
+        reapplyRoutes { [weak self] in
+            self?.packetFlow.writePackets([packet], withProtocols: [proto])
         }
+        return true
     }
 
     // MARK: - Packet Handling
@@ -450,11 +462,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let version = (data[0] >> 4) & 0x0F
         let proto: NSNumber = version == 6 ? NSNumber(value: AF_INET6) : NSNumber(value: AF_INET)
 
-        packetFlow.writePackets([data], withProtocols: [proto])
-
-        // Learn CDN/wildcard-domain IPs from DNS answers under split tunnel.
-        if version == 4 {
-            maybeLearnRoute(data)
+        // Under split tunnel, gate DNS answers for matched CDN/wildcard domains:
+        // install the learned route before the answer reaches the app. When
+        // gated, maybeLearnRoute delivers the packet once the route is active.
+        if version == 4, maybeLearnRoute(data, proto: proto) {
+            return
         }
+
+        packetFlow.writePackets([data], withProtocols: [proto])
     }
 }
