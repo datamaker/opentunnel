@@ -279,10 +279,15 @@ public class VpnTunnel : IDisposable
     }
 
     /// <summary>
-    /// Snoop DNS answers for matched domains and route the exact IPs the client
-    /// resolved (handles CDN domains by hostname). Fire-and-forget route adds.
+    /// Snoop a DNS answer for a matched (CDN/wildcard) domain. If it carries IPs
+    /// we have not routed yet, install the routes and only return once they are
+    /// in place. The caller awaits this before delivering the DNS answer to the
+    /// app, which closes a race: the answer reaches the app and the snooper at
+    /// the same instant, so without gating the app opens its connection to the
+    /// freshly resolved IP before the route exists — the first request leaks
+    /// outside the tunnel and the WAF rejects the client's real IP (403).
     /// </summary>
-    private void MaybeLearnRoute(byte[] packet)
+    private async Task MaybeLearnRouteAsync(byte[] packet)
     {
         var matcher = _domainMatcher;
         if (matcher == null || matcher.IsEmpty) return;
@@ -305,7 +310,7 @@ public class VpnTunnel : IDisposable
                 added.Count, dns.QName);
             foreach (var ip in added)
             {
-                _ = _wintunAdapter.AddRouteAsync(ip, 32);
+                await _wintunAdapter.AddRouteAsync(ip, 32);
             }
         }
     }
@@ -330,11 +335,15 @@ public class VpnTunnel : IDisposable
                     switch (message.Type)
                     {
                         case MessageType.DataPacket:
+                            // Gate: install any newly-learned split route BEFORE
+                            // delivering the DNS answer, so the app's first
+                            // connection to the freshly-resolved IP uses the
+                            // tunnel instead of leaking (WAF 403).
+                            await MaybeLearnRouteAsync(message.Payload);
                             // Forward IP packet to TUN interface
                             await _wintunAdapter.WritePacketAsync(message.Payload);
                             Interlocked.Add(ref _bytesReceived, message.Payload.Length);
                             Interlocked.Increment(ref _packetsReceived);
-                            MaybeLearnRoute(message.Payload);
                             break;
 
                         case MessageType.Keepalive:
