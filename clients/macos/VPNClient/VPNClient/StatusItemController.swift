@@ -10,6 +10,10 @@
 //  menu-bar icons.
 //
 
+// The target also builds for iOS (SUPPORTED_PLATFORMS includes iphoneos), where
+// AppKit and the menu bar do not exist — iOS shows its own system VPN indicator.
+#if os(macOS)
+
 import AppKit
 import Combine
 
@@ -120,3 +124,5 @@ final class StatusItemController: NSObject {
         NSApplication.shared.terminate(nil)
     }
 }
+
+#endif
