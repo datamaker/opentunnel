@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -16,6 +17,7 @@ public partial class MainWindow : Window
 {
     private readonly ILogger<MainWindow> _logger;
     private readonly MainViewModel _viewModel;
+    private readonly TrayIconManager _tray;
 
     private LoginView? _loginView;
     private MainView? _mainView;
@@ -31,6 +33,10 @@ public partial class MainWindow : Window
         // The shared view-model is the DataContext for every screen; the
         // hosted UserControls inherit it through the ContentControl.
         DataContext = _viewModel;
+
+        // System-tray status icon (green/amber/gray). Lives for the app's
+        // lifetime; see OnClosing for the close-to-tray behavior.
+        _tray = new TrayIconManager(this, _viewModel);
 
         // Stay signed in across restarts: if we have saved credentials, restore
         // the session and go straight to the Main screen (the user still taps
@@ -87,9 +93,29 @@ public partial class MainWindow : Window
         RootContent.Content = _settingsView;
     }
 
+    /// <summary>
+    /// Closing the window hides it to the tray instead of quitting, so the VPN
+    /// keeps running in the background (like OpenVPN). The app only truly exits
+    /// when the user picks "Exit" from the tray menu.
+    /// </summary>
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        if (!_tray.ExitRequested)
+        {
+            e.Cancel = true;
+            Hide();
+            _tray.ShowHideToTrayHintOnce();
+            return;
+        }
+
+        base.OnClosing(e);
+    }
+
     protected override void OnClosed(EventArgs e)
     {
+        // Real exit: disconnect the tunnel and release the tray icon.
         _mainView?.Cleanup();
+        _tray.Dispose();
         base.OnClosed(e);
     }
 }

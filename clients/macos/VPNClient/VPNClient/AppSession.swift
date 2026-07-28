@@ -59,6 +59,10 @@ enum CredentialStore {
 
 @MainActor
 final class AppSession: ObservableObject {
+    /// Shared instance so the AppKit menu-bar status item and the SwiftUI scene
+    /// observe the same session state.
+    static let shared = AppSession()
+
     @Published var isLoggedIn: Bool = false
 
     // Stored connection details (not published — read on demand).
