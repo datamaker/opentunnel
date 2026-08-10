@@ -45,9 +45,14 @@ struct AuthRequest: VPNMessage, Codable {
     let password: String
     let platform: String
     let clientVersion: String
+    // SSO auth (optional). Optionals are encoded with encodeIfPresent, so the
+    // wire JSON is unchanged for password auth and older servers.
+    // authType: "password" (default when absent) | "sso" | "session"
+    let authType: String?
+    let token: String?
 
     enum CodingKeys: String, CodingKey {
-        case username, password, platform, clientVersion
+        case username, password, platform, clientVersion, authType, token
     }
 
     init(username: String, password: String) {
@@ -55,6 +60,19 @@ struct AuthRequest: VPNMessage, Codable {
         self.password = password
         self.platform = "macos"
         self.clientVersion = "1.0.0"
+        self.authType = nil
+        self.token = nil
+    }
+
+    /// Token-based auth: authType "sso" with the IdP id_token (first connect)
+    /// or "session" with the server-issued 30-day session token.
+    init(authType: String, token: String) {
+        self.username = ""
+        self.password = ""
+        self.platform = "macos"
+        self.clientVersion = "1.0.0"
+        self.authType = authType
+        self.token = token
     }
 }
 

@@ -3,4 +3,4 @@ pub mod serializer;
 pub mod types;
 
 pub use message::{Frame, MessageBuffer};
-pub use types::{AuthRequest, AuthResponse, ClientPlatform, ConfigPush, MessageType};
+pub use types::{AuthRequest, AuthResponse, AuthType, ClientPlatform, ConfigPush, MessageType};

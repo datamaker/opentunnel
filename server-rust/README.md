@@ -35,6 +35,34 @@ Control payloads are JSON; data packets carry raw IP packets. Message types
 `KEEPALIVE_ACK` (`0x05`) handling and the unauthenticated `/health` endpoint
 from the Node.js server's later fixes are included.
 
+### Authentication
+
+`AUTH_REQUEST` (0x01) supports three modes via the optional `authType` field
+(absent = `password`, so existing clients keep working):
+
+- **`password`** — `username` + `password`, bcrypt-verified against `users`.
+  On success the server mints an HS256 session JWT (`JWT_SECRET`, 24h) and
+  returns it as `sessionToken`.
+- **`sso`** — `token` carries an OIDC **id_token** (RS256) from the internal
+  IdP. The server verifies it against the issuer's JWKS (discovered via
+  `{OIDC_ISSUER}/.well-known/openid-configuration`, keys cached in memory and
+  refetched on unknown `kid`), checking `iss` == `OIDC_ISSUER`, `aud` ==
+  `OIDC_CLIENT_ID`, `exp`, and `email_verified == true`. The user is looked up
+  by email and JIT-provisioned on first login (`username` = email,
+  `password_hash` = `!sso`, so password login can never match). The session JWT
+  is minted with a 30-day expiry (`SSO_SESSION_TTL_DAYS`) and an `sso: true`
+  claim. Requires `OIDC_ISSUER` to be set; otherwise `sso` requests are
+  rejected.
+- **`session`** — `token` carries a previously-issued OpenTunnel session JWT
+  (HS256), used as a reconnect credential. The server validates signature and
+  expiry, re-checks the account is active, and mints a fresh token (preserving
+  the SSO marker and its longer TTL). Works without any OIDC configuration.
+
+All modes then follow the same path: connection-limit check, IP allocation,
+session insert, `AUTH_RESPONSE` + `CONFIG_PUSH`. SSO settings live in
+`src/sso.rs` (verification) and `src/config.rs` (`OIDC_ISSUER`,
+`OIDC_CLIENT_ID`, `SSO_SESSION_TTL_DAYS`).
+
 ### Data plane
 
 The TUN device is driven **natively in pure Rust** — `src/tun.rs` opens

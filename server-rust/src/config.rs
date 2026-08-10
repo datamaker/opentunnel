@@ -60,6 +60,23 @@ pub struct SplitConfig {
     pub refresh_secs: u64,
 }
 
+/// OIDC single sign-on settings.
+///
+/// SSO is enabled when `issuer` is non-empty: `authType: "sso"` auth requests
+/// carry an id_token that is verified against the issuer's JWKS. When `issuer`
+/// is empty, SSO auth is rejected (session-token reconnects still work — they
+/// only need `JWT_SECRET`).
+#[derive(Debug, Clone)]
+pub struct SsoConfig {
+    /// OIDC issuer URL (`OIDC_ISSUER`). Empty = SSO disabled.
+    pub issuer: String,
+    /// Expected `aud` claim of the id_token (`OIDC_CLIENT_ID`).
+    pub client_id: String,
+    /// Lifetime of session JWTs minted for SSO logins, in days
+    /// (`SSO_SESSION_TTL_DAYS`).
+    pub session_ttl_days: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub server: ServerConfig,
@@ -67,6 +84,7 @@ pub struct Config {
     pub vpn: VpnConfig,
     pub admin: AdminConfig,
     pub split: SplitConfig,
+    pub sso: SsoConfig,
     pub jwt_secret: String,
     pub production: bool,
 }
@@ -145,6 +163,14 @@ impl Config {
                 routes: env_csv("SPLIT_INCLUDE_ROUTES"),
                 domains: env_csv("SPLIT_INCLUDE_DOMAINS"),
                 refresh_secs: env_parse("SPLIT_DNS_REFRESH_SECS", 300),
+            },
+            sso: SsoConfig {
+                issuer: env_or("OIDC_ISSUER", "")
+                    .trim()
+                    .trim_end_matches('/')
+                    .to_string(),
+                client_id: env_or("OIDC_CLIENT_ID", "opentunnel"),
+                session_ttl_days: env_parse("SSO_SESSION_TTL_DAYS", 30),
             },
             jwt_secret: env_or("JWT_SECRET", "change-this-in-production"),
             production: env_or("NODE_ENV", "development") == "production",

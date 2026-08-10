@@ -38,14 +38,26 @@ public partial class MainWindow : Window
         // lifetime; see OnClosing for the close-to-tray behavior.
         _tray = new TrayIconManager(this, _viewModel);
 
-        // Stay signed in across restarts: if we have saved credentials, restore
-        // the session and go straight to the Main screen (the user still taps
-        // Connect). Otherwise show the login screen.
-        var saved = CredentialStore.Load();
-        if (saved is { } cred)
+        // Stay signed in across restarts: if we have a saved SSO session or
+        // saved credentials, restore the session and go straight to the Main
+        // screen (the user still taps Connect). Otherwise show the login screen.
+        if (CredentialStore.LoadSsoSession() is { } sso)
+        {
+            // SSO session: no password stored — reconnects authenticate with
+            // the DPAPI-protected 30-day session token ({authType:"session"}).
+            _viewModel.Username = sso.Username;
+            _viewModel.SessionToken = sso.SessionToken;
+            _viewModel.AuthMode = CredentialStore.AuthModeSso;
+            _viewModel.ServerAddress = sso.Server;
+            _viewModel.ServerPort = sso.Port;
+            _viewModel.IsAuthenticated = true;
+            ShowMain();
+        }
+        else if (CredentialStore.Load() is { } cred)
         {
             _viewModel.Username = cred.Username;
             _viewModel.Password = cred.Password;
+            _viewModel.AuthMode = CredentialStore.AuthModePassword;
             _viewModel.ServerAddress = cred.Server;
             _viewModel.ServerPort = cred.Port;
             _viewModel.IsAuthenticated = true;

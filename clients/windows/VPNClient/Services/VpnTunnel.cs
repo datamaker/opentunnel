@@ -38,6 +38,13 @@ public class VpnTunnel : IDisposable
     public event EventHandler<ConnectionStateEventArgs>? ConnectionStateChanged;
     public event EventHandler<VpnErrorEventArgs>? ErrorOccurred;
 
+    /// <summary>
+    /// Raised when a session-token authentication succeeded and the server
+    /// issued a (possibly rotated) session token. The new token is already
+    /// persisted; subscribers should refresh their in-memory copy.
+    /// </summary>
+    public event EventHandler<string>? SessionTokenRefreshed;
+
     public bool IsConnected { get; private set; }
 
     // Details from the server's ConfigPush, surfaced for the Connection Details
@@ -55,9 +62,37 @@ public class VpnTunnel : IDisposable
     }
 
     /// <summary>
-    /// Connect to VPN server with given credentials
+    /// Connect to VPN server with username/password credentials
     /// </summary>
-    public async Task ConnectAsync(string serverAddress, int port, string username, string password)
+    public Task ConnectAsync(string serverAddress, int port, string username, string password)
+    {
+        return ConnectCoreAsync(serverAddress, port, new AuthRequest
+        {
+            Username = username,
+            Password = password,
+            ClientVersion = "1.0.0",
+            Platform = "windows"
+        });
+    }
+
+    /// <summary>
+    /// Connect to VPN server with the persisted SSO session token
+    /// ({authType:"session"}). Used on every (re)connect after a
+    /// "Google로 로그인 (Datasee SSO)" login — no password is available then.
+    /// </summary>
+    public Task ConnectWithSessionTokenAsync(string serverAddress, int port, string username, string sessionToken)
+    {
+        return ConnectCoreAsync(serverAddress, port, new AuthRequest
+        {
+            Username = username,
+            AuthType = AuthTypes.Session,
+            Token = sessionToken,
+            ClientVersion = "1.0.0",
+            Platform = "windows"
+        });
+    }
+
+    private async Task ConnectCoreAsync(string serverAddress, int port, AuthRequest authRequest)
     {
         if (IsConnected)
         {
@@ -81,31 +116,41 @@ public class VpnTunnel : IDisposable
 
             await _tlsConnection.ConnectAsync(serverAddress, port);
 
-            // Step 2: Authenticate
+            // Step 2: Authenticate. Password logins re-send the account password
+            // (bcrypt-verified by the server); SSO logins re-send the 30-day
+            // session token with {authType:"session"} instead.
             RaiseConnectionStateChanged(ConnectionState.Authenticating, null);
-            _logger.LogInformation("Authenticating user {Username}", username);
-
-            var authRequest = new AuthRequest
-            {
-                Username = username,
-                // The server authenticates every connection with the account
-                // password (bcrypt). It does NOT accept the JWT session token as
-                // a credential, so we must re-send the real password here — the
-                // same way the iOS/macOS/Android clients do.
-                Password = password,
-                ClientVersion = "1.0.0",
-                Platform = "windows"
-            };
+            _logger.LogInformation("Authenticating user {Username} (authType={AuthType})",
+                authRequest.Username, authRequest.AuthType ?? AuthTypes.Password);
 
             var authResponse = await _tlsConnection.AuthenticateAsync(authRequest);
 
             if (!authResponse.Success)
             {
+                if (authRequest.AuthType == AuthTypes.Session)
+                {
+                    // The session token was rejected (expired/revoked): drop it
+                    // so the next launch goes back to the login screen, and
+                    // surface a re-login prompt instead of a generic failure.
+                    CredentialStore.ClearSessionToken();
+                    throw new VpnSessionExpiredException(
+                        "SSO 재로그인 필요: 세션이 만료되었습니다. Google로 다시 로그인해 주세요.");
+                }
+
                 throw new VpnException($"Authentication failed: {authResponse.ErrorMessage}");
             }
 
             _sessionToken = authResponse.SessionToken;
             _logger.LogInformation("Authentication successful");
+
+            // Session-token auth: the server may rotate the 30-day token on each
+            // re-auth. Persist the fresh one and let the view-model update its copy.
+            if (authRequest.AuthType == AuthTypes.Session
+                && !string.IsNullOrEmpty(authResponse.SessionToken))
+            {
+                CredentialStore.UpdateSessionToken(authResponse.SessionToken);
+                SessionTokenRefreshed?.Invoke(this, authResponse.SessionToken);
+            }
 
             // Step 3: Receive configuration from server
             _logger.LogInformation("Waiting for configuration from server");
@@ -549,4 +594,14 @@ public class VpnException : Exception
 {
     public VpnException(string message) : base(message) { }
     public VpnException(string message, Exception innerException) : base(message, innerException) { }
+}
+
+/// <summary>
+/// The persisted SSO session token was rejected by the server (expired or
+/// revoked). The token has already been cleared from the credential store;
+/// the user must sign in with "Google로 로그인 (Datasee SSO)" again.
+/// </summary>
+public class VpnSessionExpiredException : VpnException
+{
+    public VpnSessionExpiredException(string message) : base(message) { }
 }

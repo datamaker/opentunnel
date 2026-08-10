@@ -51,9 +51,27 @@ All messages follow this format:
   "username": "string",
   "password": "string",
   "clientVersion": "string",
-  "platform": "ios|android|macos|windows"
+  "platform": "ios|android|macos|windows",
+  "authType": "password|sso|session (optional, default: password)",
+  "token": "string (optional)"
 }
 ```
+
+Authentication modes (`authType`; absent = `password` for backward
+compatibility):
+
+- **`password`**: `username` + `password` are required; `token` is ignored.
+- **`sso`**: `token` carries an OIDC **id_token** (RS256) issued by the
+  internal IdP. The server verifies it against the issuer's JWKS and logs the
+  user in by verified email (JIT-provisioning on first login). `username` and
+  `password` are ignored. Rejected if the server has no OIDC issuer configured.
+- **`session`**: `token` carries a `sessionToken` previously returned in
+  AUTH_RESPONSE (HS256 JWT), used to reconnect without re-entering
+  credentials. `username` and `password` are ignored.
+
+Session token lifetime: 24 hours for password logins, 30 days (server
+configurable) for SSO logins; `session` reconnects preserve the original
+mode's lifetime and return a fresh token.
 
 ### AUTH_RESPONSE (0x02)
 ```json

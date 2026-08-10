@@ -122,6 +122,9 @@ class VPNManager: ObservableObject {
             gateway = ""
             dnsServers = []
             mtu = 0
+            // If the server rejected our SSO session token, clear it so the
+            // user is sent back through the SSO flow.
+            AppSession.shared.handleSSOSessionRejectionIfNeeded()
         case .connecting:
             status = .connecting
         case .connected:
@@ -129,6 +132,9 @@ class VPNManager: ObservableObject {
             if connectedTime == nil {
                 connectedTime = Date()
             }
+            // First SSO connect: the extension leaves the server-issued session
+            // token in the App Group — move it into the Keychain.
+            AppSession.shared.adoptPendingSSOSessionToken()
         case .reasserting:
             status = .reasserting
         case .disconnecting:
@@ -141,6 +147,24 @@ class VPNManager: ObservableObject {
     // MARK: - Connection Methods
 
     func connect(username: String, password: String) async throws {
+        try await connect(providerConfiguration: [
+            "serverAddress": serverAddress,
+            "username": username,
+            "password": password
+        ])
+    }
+
+    /// SSO connect: authType "sso" with the IdP id_token (first connect) or
+    /// "session" with the server-issued 30-day session token.
+    func connect(authType: String, token: String) async throws {
+        try await connect(providerConfiguration: [
+            "serverAddress": serverAddress,
+            "authType": authType,
+            "token": token
+        ])
+    }
+
+    private func connect(providerConfiguration: [String: Any]) async throws {
         print("🔵 Connect called")
 
         guard let manager = manager else {
@@ -157,11 +181,7 @@ class VPNManager: ObservableObject {
         let tunnelProtocol = NETunnelProviderProtocol()
         tunnelProtocol.providerBundleIdentifier = bundleId
         tunnelProtocol.serverAddress = serverAddress
-        tunnelProtocol.providerConfiguration = [
-            "serverAddress": serverAddress,
-            "username": username,
-            "password": password
-        ]
+        tunnelProtocol.providerConfiguration = providerConfiguration
 
         manager.protocolConfiguration = tunnelProtocol
         manager.localizedDescription = "VPN Client"

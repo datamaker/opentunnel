@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,8 +18,10 @@ public partial class LoginView : UserControl
     private readonly ILogger<LoginView> _logger;
     private readonly TlsConnection _tlsConnection;
     private readonly MainViewModel _viewModel;
+    private readonly DeviceFlowService _deviceFlow = new();
 
     private bool _passwordVisible;
+    private CancellationTokenSource? _ssoCts;
 
     public event EventHandler<LoginEventArgs>? LoginSuccessful;
 
@@ -169,6 +172,7 @@ public partial class LoginView : UserControl
                 _viewModel.Username = username;
                 _viewModel.Password = password;
                 _viewModel.SessionToken = response.SessionToken ?? string.Empty;
+                _viewModel.AuthMode = CredentialStore.AuthModePassword;
                 _viewModel.IsAuthenticated = true;
 
                 // Disconnect the temporary connection (will reconnect through VpnTunnel)
@@ -203,6 +207,168 @@ public partial class LoginView : UserControl
         }
     }
 
+    /// <summary>
+    /// "Google로 로그인 (Datasee SSO)": OAuth 2.0 device flow against the public
+    /// Datasee IdP (reachable without the VPN). The default browser opens the
+    /// verification page; we show the user code + URL as a fallback and poll
+    /// the token endpoint until an id_token is issued. The VPN server then
+    /// exchanges it for a 30-day session token ({authType:"sso"}), which is
+    /// persisted DPAPI-encrypted for reconnects ({authType:"session"}).
+    /// </summary>
+    private async void SsoLoginButton_Click(object sender, RoutedEventArgs e)
+    {
+        var serverAddress = GetServerAddress();
+        if (string.IsNullOrEmpty(serverAddress))
+        {
+            ShowError("Please enter a server address.");
+            return;
+        }
+
+        if (!TryGetServerPort(out int port))
+        {
+            ShowError("Please enter a valid port number (1-65535).");
+            return;
+        }
+
+        HideError();
+        _ssoCts = new CancellationTokenSource();
+        SetSsoFlowState(true);
+
+        try
+        {
+            // Step 1: request a device/user code pair from the IdP.
+            SsoStatusText.Text = "Datasee SSO에 연결하는 중...";
+            SsoUserCodeText.Text = string.Empty;
+            SsoVerificationUriText.Text = string.Empty;
+
+            var auth = await _deviceFlow.StartAsync(_ssoCts.Token);
+
+            // Step 2: open the default browser; show code + URL as fallback.
+            SsoStatusText.Text = "브라우저에서 Google 로그인을 완료해 주세요.";
+            SsoUserCodeText.Text = auth.UserCode;
+            SsoVerificationUriText.Text =
+                $"브라우저가 열리지 않으면 {auth.VerificationUri} 에 접속해 위 코드를 입력해 주세요.";
+
+            var browserUrl = string.IsNullOrEmpty(auth.VerificationUriComplete)
+                ? auth.VerificationUri
+                : auth.VerificationUriComplete;
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = browserUrl,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                // Not fatal — the user can follow the on-screen code + URL.
+                _logger.LogWarning(ex, "Failed to open the default browser for SSO");
+            }
+
+            // Step 3: poll until the browser login completes.
+            var idToken = await _deviceFlow.PollForIdTokenAsync(auth, _ssoCts.Token);
+
+            // Step 4: exchange the id_token for a VPN session ({authType:"sso"}).
+            SsoStatusText.Text = "VPN 서버에 인증하는 중...";
+            _logger.LogInformation("SSO id_token acquired; authenticating with VPN server");
+
+            await _tlsConnection.ConnectAsync(serverAddress, port);
+
+            var username = DeviceFlowService.TryGetEmail(idToken) ?? "Datasee SSO";
+            var authRequest = new AuthRequest
+            {
+                Username = username,
+                AuthType = AuthTypes.Sso,
+                Token = idToken,
+                ClientVersion = "1.0.0",
+                Platform = "windows"
+            };
+
+            var response = await _tlsConnection.AuthenticateAsync(authRequest);
+
+            if (response.Success)
+            {
+                _logger.LogInformation("SSO authentication successful for {Username}", username);
+
+                var sessionToken = response.SessionToken ?? string.Empty;
+
+                // Persist the 30-day session token (DPAPI) so restarts and
+                // reconnects skip the browser flow ({authType:"session"}).
+                if (!string.IsNullOrEmpty(sessionToken))
+                {
+                    CredentialStore.SaveSsoSession(username, sessionToken, serverAddress, port);
+                }
+
+                _viewModel.ServerAddress = serverAddress;
+                _viewModel.ServerPort = port;
+                _viewModel.Username = username;
+                _viewModel.Password = null;
+                _viewModel.SessionToken = sessionToken;
+                _viewModel.AuthMode = CredentialStore.AuthModeSso;
+                _viewModel.IsAuthenticated = true;
+
+                // Disconnect the temporary connection (will reconnect through VpnTunnel)
+                await _tlsConnection.DisconnectAsync();
+
+                LoginSuccessful?.Invoke(this, new LoginEventArgs(username, sessionToken));
+            }
+            else
+            {
+                ShowError(response.ErrorMessage ?? "SSO 인증에 실패했습니다. 관리자에게 문의해 주세요.");
+                await _tlsConnection.DisconnectAsync();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // User pressed 취소 — quietly return to the idle login screen.
+            _logger.LogInformation("SSO login cancelled by user");
+        }
+        catch (DeviceFlowException ex)
+        {
+            ShowError(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SSO login failed");
+            ShowError($"SSO 로그인에 실패했습니다: {ex.Message}");
+
+            try
+            {
+                await _tlsConnection.DisconnectAsync();
+            }
+            catch
+            {
+                // Ignore cleanup errors
+            }
+        }
+        finally
+        {
+            SetSsoFlowState(false);
+            _ssoCts?.Dispose();
+            _ssoCts = null;
+        }
+    }
+
+    private void SsoCancelButton_Click(object sender, RoutedEventArgs e)
+    {
+        _ssoCts?.Cancel();
+    }
+
+    private void SetSsoFlowState(bool inProgress)
+    {
+        SsoPanel.Visibility = inProgress ? Visibility.Visible : Visibility.Collapsed;
+        SsoLoginButton.IsEnabled = !inProgress;
+        LoginButton.IsEnabled = !inProgress;
+        ServerAddressTextBox.IsEnabled = !inProgress;
+        PortTextBox.IsEnabled = !inProgress;
+        UsernameTextBox.IsEnabled = !inProgress;
+        PasswordBox.IsEnabled = !inProgress;
+        PasswordTextBox.IsEnabled = !inProgress;
+        TogglePasswordButton.IsEnabled = !inProgress;
+        RememberMeCheckBox.IsEnabled = !inProgress;
+    }
+
     private string GetServerAddress() => ServerAddressTextBox.Text.Trim();
 
     private bool TryGetServerPort(out int port)
@@ -219,6 +385,7 @@ public partial class LoginView : UserControl
     private void SetLoadingState(bool isLoading)
     {
         LoginButton.IsEnabled = !isLoading;
+        SsoLoginButton.IsEnabled = !isLoading;
         ServerAddressTextBox.IsEnabled = !isLoading;
         PortTextBox.IsEnabled = !isLoading;
         UsernameTextBox.IsEnabled = !isLoading;

@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace VPNClient.Protocol;
 
 /// <summary>
@@ -71,6 +73,16 @@ public class VpnMessage
 }
 
 /// <summary>
+/// Wire values for <see cref="AuthRequest.AuthType"/>.
+/// </summary>
+public static class AuthTypes
+{
+    public const string Password = "password";
+    public const string Sso = "sso";
+    public const string Session = "session";
+}
+
+/// <summary>
 /// Authentication request payload structure
 /// </summary>
 public class AuthRequest
@@ -94,6 +106,24 @@ public class AuthRequest
     /// Platform identifier (always "windows" for this client)
     /// </summary>
     public string Platform { get; set; } = "windows";
+
+    /// <summary>
+    /// Optional authentication type: "password" (legacy default when omitted),
+    /// "sso" (Token carries an OIDC id_token from the Datasee IdP) or
+    /// "session" (Token carries the server-issued 30-day session token).
+    /// Null is omitted from the JSON so old servers see the legacy payload.
+    /// </summary>
+    [JsonPropertyName("authType")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? AuthType { get; set; }
+
+    /// <summary>
+    /// Credential that goes with <see cref="AuthType"/> — the OIDC id_token for
+    /// "sso", or the persisted session token for "session". Null is omitted.
+    /// </summary>
+    [JsonPropertyName("token")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Token { get; set; }
 }
 
 /// <summary>

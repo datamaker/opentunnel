@@ -49,7 +49,13 @@ class MainActivity : ComponentActivity() {
                 "com.vpn.client.VPN_ERROR" -> {
                     val errorMessage = intent.getStringExtra("error_message") ?: "Connection failed"
                     Log.d("MainActivity", "VPN Error: $errorMessage")
-                    vpnViewModel.onVpnError(errorMessage)
+                    if (intent.getBooleanExtra("session_auth_failed", false)) {
+                        // Stored SSO session token rejected — clear the session
+                        // and send the user back to the login screen.
+                        vpnViewModel.onSessionAuthFailed()
+                    } else {
+                        vpnViewModel.onVpnError(errorMessage)
+                    }
                 }
                 "com.vpn.client.VPN_DISCONNECTED" -> {
                     Log.d("MainActivity", "VPN Disconnected")
@@ -110,6 +116,19 @@ class MainActivity : ComponentActivity() {
                     val navController = rememberNavController()
                     val isLoggedIn by viewModel.isLoggedIn.collectAsState()
 
+                    // If the session is invalidated while inside the app (e.g. the
+                    // SSO session token expired), return to the login screen.
+                    LaunchedEffect(isLoggedIn) {
+                        if (!isLoggedIn &&
+                            navController.currentDestination?.route != null &&
+                            navController.currentDestination?.route != "login"
+                        ) {
+                            navController.navigate("login") {
+                                popUpTo(0) { inclusive = true }
+                            }
+                        }
+                    }
+
                     NavHost(
                         navController = navController,
                         startDestination = if (isLoggedIn) "main" else "login"
@@ -166,8 +185,15 @@ class MainActivity : ComponentActivity() {
             action = MyVpnService.ACTION_CONNECT
             putExtra(MyVpnService.EXTRA_SERVER_ADDRESS, vpnViewModel.serverAddress.value)
             putExtra(MyVpnService.EXTRA_SERVER_PORT, vpnViewModel.serverPort.value)
-            putExtra(MyVpnService.EXTRA_USERNAME, vpnViewModel.username.value)
-            putExtra(MyVpnService.EXTRA_PASSWORD, vpnViewModel.password.value)
+            if (vpnViewModel.authMode.value == VpnViewModel.AUTH_MODE_SSO) {
+                // SSO: reconnect with the stored 30-day session token —
+                // no password is ever kept for SSO users.
+                putExtra(MyVpnService.EXTRA_AUTH_TYPE, MyVpnService.AUTH_TYPE_SESSION)
+                putExtra(MyVpnService.EXTRA_TOKEN, vpnViewModel.sessionToken.value)
+            } else {
+                putExtra(MyVpnService.EXTRA_USERNAME, vpnViewModel.username.value)
+                putExtra(MyVpnService.EXTRA_PASSWORD, vpnViewModel.password.value)
+            }
         }
         startForegroundService(serviceIntent)
         vpnViewModel.onVpnConnecting()

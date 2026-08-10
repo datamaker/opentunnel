@@ -35,6 +35,14 @@ class MyVpnService : VpnService() {
         const val EXTRA_USERNAME = "username"
         const val EXTRA_PASSWORD = "password"
 
+        // SSO: auth_type "session" + the stored 30-day session token replaces
+        // username/password for Datasee SSO users.
+        const val EXTRA_AUTH_TYPE = "auth_type"
+        const val EXTRA_TOKEN = "token"
+
+        const val AUTH_TYPE_PASSWORD = "password"
+        const val AUTH_TYPE_SESSION = "session"
+
         private const val TAG = "MyVpnService"
         private const val NOTIFICATION_CHANNEL_ID = "vpn_service_channel"
         private const val NOTIFICATION_ID = 1
@@ -59,6 +67,8 @@ class MyVpnService : VpnService() {
     private var serverPort: Int = 443
     private var username: String = ""
     private var password: String = ""
+    private var authType: String = AUTH_TYPE_PASSWORD
+    private var token: String = ""
 
     // Traffic statistics
     private val bytesReceived = AtomicLong(0)
@@ -90,8 +100,15 @@ class MyVpnService : VpnService() {
                 serverPort = intent.getIntExtra(EXTRA_SERVER_PORT, 443)
                 username = intent.getStringExtra(EXTRA_USERNAME) ?: ""
                 password = intent.getStringExtra(EXTRA_PASSWORD) ?: ""
+                authType = intent.getStringExtra(EXTRA_AUTH_TYPE) ?: AUTH_TYPE_PASSWORD
+                token = intent.getStringExtra(EXTRA_TOKEN) ?: ""
 
-                if (serverAddress.isNotEmpty() && username.isNotEmpty()) {
+                val hasCredentials = if (authType == AUTH_TYPE_PASSWORD) {
+                    username.isNotEmpty()
+                } else {
+                    token.isNotEmpty()
+                }
+                if (serverAddress.isNotEmpty() && hasCredentials) {
                     startVpn()
                 }
             }
@@ -219,16 +236,31 @@ class MyVpnService : VpnService() {
         stopSelf()
     }
 
+    /**
+     * Thrown when the stored SSO session token is rejected — the UI clears the
+     * session and asks the user to log in with SSO again.
+     */
+    private class SessionAuthException(message: String) : Exception(message)
+
     private suspend fun authenticate(): String = withContext(Dispatchers.IO) {
         val connection = tlsConnection ?: throw Exception("Connection not established")
 
-        // Send auth request with credentials
-        val authRequest = AuthRequest(
-            username = username,
-            password = password,
-            clientVersion = "1.0.0",
-            platform = "android"
-        )
+        // Send auth request with credentials (password) or session token (SSO)
+        val authRequest = if (authType == AUTH_TYPE_PASSWORD) {
+            AuthRequest(
+                username = username,
+                password = password,
+                clientVersion = "1.0.0",
+                platform = "android"
+            )
+        } else {
+            AuthRequest(
+                clientVersion = "1.0.0",
+                platform = "android",
+                authType = authType,
+                token = token
+            )
+        }
         val requestBytes = VpnMessageSerializer.serializeAuthRequest(authRequest)
         connection.send(VpnMessageType.AUTH_REQUEST, requestBytes)
 
@@ -240,7 +272,11 @@ class MyVpnService : VpnService() {
 
         val authResponse = VpnMessageSerializer.deserializeAuthResponse(response.second)
         if (!authResponse.success) {
-            throw Exception(authResponse.errorMessage ?: "Authentication failed")
+            val message = authResponse.errorMessage ?: "Authentication failed"
+            if (authType == AUTH_TYPE_SESSION) {
+                throw SessionAuthException(message)
+            }
+            throw Exception(message)
         }
 
         authResponse.sessionToken
@@ -533,10 +569,12 @@ class MyVpnService : VpnService() {
         Log.e(TAG, "Connection error: ${e.message}")
         stopVpn()
 
-        // Broadcast error to UI
+        // Broadcast error to UI. session_auth_failed tells the UI the stored
+        // 30-day SSO session token was rejected (re-login via SSO required).
         val intent = Intent("com.vpn.client.VPN_ERROR").apply {
             setPackage(packageName)
             putExtra("error_message", e.message)
+            putExtra("session_auth_failed", e is SessionAuthException)
         }
         sendBroadcast(intent)
     }

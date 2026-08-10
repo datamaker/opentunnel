@@ -19,12 +19,23 @@ struct LoginView: View {
     @State private var rememberCredentials = true
     @State private var showingPassword = false
 
+    // Datasee SSO (OAuth device flow) state.
+    private enum SSOState {
+        case idle
+        case starting
+        case waiting(DeviceAuthorization)
+        case failed(String)
+    }
+    @State private var ssoState: SSOState = .idle
+    @State private var ssoTask: Task<Void, Never>?
+
     var body: some View {
         ScrollView {
             VStack(spacing: 32) {
                 headerSection
                 formSection
                 loginButton
+                ssoSection
                 Spacer()
             }
             .padding()
@@ -32,6 +43,9 @@ struct LoginView: View {
         .background(Color.groupedBackground)
         .onAppear {
             loadSavedSettings()
+        }
+        .onDisappear {
+            ssoTask?.cancel()
         }
     }
 
@@ -179,7 +193,102 @@ struct LoginView: View {
         .disabled(!isFormValid)
     }
 
+    // MARK: - SSO Section
+    private var ssoSection: some View {
+        VStack(spacing: 16) {
+            // Divider: "또는"
+            HStack {
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.3))
+                    .frame(height: 1)
+                Text("또는")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.3))
+                    .frame(height: 1)
+            }
+
+            switch ssoState {
+            case .idle, .failed:
+                ssoLoginButton
+                if case .failed(let message) = ssoState {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .multilineTextAlignment(.center)
+                }
+            case .starting:
+                ProgressView()
+                    .padding(.vertical, 8)
+            case .waiting(let authorization):
+                ssoWaitingCard(authorization)
+            }
+        }
+    }
+
+    private var ssoLoginButton: some View {
+        Button {
+            startSSOLogin()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "person.badge.key.fill")
+                Text("Google로 로그인 (Datasee SSO)")
+                    .fontWeight(.semibold)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(Color.cardBackground)
+            .foregroundColor(isServerValid ? .primary : .secondary)
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isServerValid)
+    }
+
+    /// Shown while waiting for the user to approve in the browser: the code as
+    /// a manual fallback, the verification URL, and a cancel button.
+    private func ssoWaitingCard(_ authorization: DeviceAuthorization) -> some View {
+        VStack(spacing: 12) {
+            ProgressView()
+
+            Text("브라우저에서 승인해 주세요")
+                .font(.headline)
+
+            Text(authorization.userCode)
+                .font(.system(.title, design: .monospaced))
+                .fontWeight(.bold)
+                .textSelection(.enabled)
+
+            Text("브라우저가 열리지 않으면 \(authorization.verificationUri) 에서 위 코드를 입력하세요")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+
+            Button("취소") {
+                cancelSSOLogin()
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.red)
+            .padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+        .background(Color.cardBackground)
+        .cornerRadius(12)
+    }
+
     // MARK: - Computed Properties
+    private var isServerValid: Bool {
+        !serverAddress.isEmpty &&
+        !serverPort.isEmpty &&
+        Int(serverPort) != nil
+    }
+
     private var isFormValid: Bool {
         !username.isEmpty &&
         !password.isEmpty &&
@@ -190,6 +299,7 @@ struct LoginView: View {
 
     // MARK: - Methods
     private func login() {
+        ssoTask?.cancel()
         session.signIn(
             host: serverAddress,
             port: serverPort,
@@ -197,6 +307,41 @@ struct LoginView: View {
             password: password,
             remember: rememberCredentials
         )
+    }
+
+    /// Runs the OAuth device flow: get a code, open the browser, poll for the
+    /// id_token, then hand it to the session. Host/port still come from the
+    /// form — SSO only replaces username/password.
+    private func startSSOLogin() {
+        ssoTask?.cancel()
+        ssoState = .starting
+        // Persist host/port like the password path does, so they pre-fill.
+        UserDefaults.standard.set(serverAddress, forKey: "vpn_server_address")
+        UserDefaults.standard.set(serverPort, forKey: "vpn_server_port")
+
+        let host = serverAddress
+        let port = serverPort
+        ssoTask = Task {
+            do {
+                let service = DeviceFlowService()
+                let authorization = try await service.startAuthorization()
+                ssoState = .waiting(authorization)
+                DeviceFlowService.openVerificationPage(authorization)
+                let tokens = try await service.pollForTokens(authorization)
+                ssoState = .idle
+                session.signInWithSSO(host: host, port: port, idToken: tokens.idToken)
+            } catch is CancellationError {
+                ssoState = .idle
+            } catch {
+                ssoState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    private func cancelSSOLogin() {
+        ssoTask?.cancel()
+        ssoTask = nil
+        ssoState = .idle
     }
 
     private func loadSavedSettings() {

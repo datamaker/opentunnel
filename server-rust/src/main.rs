@@ -14,6 +14,7 @@ mod protocol;
 mod router;
 mod session;
 mod split;
+mod sso;
 mod state;
 mod tls;
 mod tun;
@@ -53,8 +54,28 @@ async fn main() -> anyhow::Result<()> {
 
     // Core services.
     let ip_pool = Arc::new(IpPool::new(&format!("{}/24", config.vpn.subnet)));
-    let auth = Arc::new(AuthService::new(db.clone(), config.jwt_secret.clone()));
+    let auth = Arc::new(AuthService::new(
+        db.clone(),
+        config.jwt_secret.clone(),
+        config.sso.session_ttl_days,
+    ));
     let sessions = Arc::new(SessionManager::new());
+
+    // OIDC SSO: enabled only when OIDC_ISSUER is set.
+    let sso = if config.sso.issuer.is_empty() {
+        tracing::info!("OIDC SSO disabled (OIDC_ISSUER not set)");
+        None
+    } else {
+        tracing::info!(
+            "OIDC SSO enabled: issuer {}, client_id {}",
+            config.sso.issuer,
+            config.sso.client_id
+        );
+        Some(Arc::new(sso::SsoVerifier::new(
+            config.sso.issuer.clone(),
+            config.sso.client_id.clone(),
+        )))
+    };
 
     // Split-tunnel policy: resolve domains once up front, then refresh on a timer.
     let split = Arc::new(SplitPolicy::new(&config.split));
@@ -93,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
         ip_pool: ip_pool.clone(),
         sessions: sessions.clone(),
         split: split.clone(),
+        sso,
         tun: tun_handle,
     });
 

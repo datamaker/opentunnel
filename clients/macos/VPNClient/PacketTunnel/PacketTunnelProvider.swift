@@ -35,6 +35,15 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private let logger = Logger(subsystem: "com.vpnclient.tunnel", category: "Provider")
 
+    // SSO handoff. The extension talks to the server; the app owns the Keychain.
+    // The shared App Group container (see the .entitlements files) carries the
+    // server-issued session token back to the app, and a rejection flag when a
+    // session token is refused so the app can clear it and require SSO again.
+    private static let appGroupId = "group.kr.co.datasee.VPNClient"
+    private static let ssoSessionTokenKey = "vpn_sso_session_token"
+    private static let ssoSessionRejectedKey = "vpn_sso_session_rejected"
+    private var authType: String?
+
     // MARK: - Tunnel Lifecycle
 
     override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
@@ -43,9 +52,18 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
         guard let config = protocolConfiguration as? NETunnelProviderProtocol,
               let providerConfig = config.providerConfiguration,
-              let serverAddress = providerConfig["serverAddress"] as? String,
-              let username = providerConfig["username"] as? String,
-              let password = providerConfig["password"] as? String else {
+              let serverAddress = providerConfig["serverAddress"] as? String else {
+            completionHandler(VPNError.configurationFailed("Invalid configuration"))
+            return
+        }
+
+        // Credentials: either token auth (authType "sso"/"session" + token) or
+        // classic username/password.
+        let authType = providerConfig["authType"] as? String
+        let token = providerConfig["token"] as? String
+        let username = providerConfig["username"] as? String
+        let password = providerConfig["password"] as? String
+        guard (authType != nil && token != nil) || (username != nil && password != nil) else {
             completionHandler(VPNError.configurationFailed("Invalid configuration"))
             return
         }
@@ -62,8 +80,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         logger.info("Connecting to \(host):\(port)")
 
         // Store credentials
-        UserDefaults.standard.set(username, forKey: "vpn_username")
-        UserDefaults.standard.set(password, forKey: "vpn_password")
+        if let authType = authType, let token = token {
+            UserDefaults.standard.set(authType, forKey: "vpn_auth_type")
+            UserDefaults.standard.set(token, forKey: "vpn_auth_token")
+        } else {
+            UserDefaults.standard.set(username, forKey: "vpn_username")
+            UserDefaults.standard.set(password, forKey: "vpn_password")
+        }
 
         // Create TLS connection
         connectToServer(host: host, port: port)
@@ -191,19 +214,32 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     // MARK: - Authentication
 
     private func authenticate() {
-        guard let username = UserDefaults.standard.string(forKey: "vpn_username"),
-              let password = UserDefaults.standard.string(forKey: "vpn_password") else {
+        let defaults = UserDefaults.standard
+        let storedAuthType = defaults.string(forKey: "vpn_auth_type")
+        let storedToken = defaults.string(forKey: "vpn_auth_token")
+        let username = defaults.string(forKey: "vpn_username")
+        let password = defaults.string(forKey: "vpn_password")
+
+        // Clear stored credentials
+        defaults.removeObject(forKey: "vpn_auth_type")
+        defaults.removeObject(forKey: "vpn_auth_token")
+        defaults.removeObject(forKey: "vpn_username")
+        defaults.removeObject(forKey: "vpn_password")
+
+        let request: AuthRequest
+        if let storedAuthType = storedAuthType, let storedToken = storedToken {
+            authType = storedAuthType
+            logger.info("Authenticating via \(storedAuthType) token")
+            request = AuthRequest(authType: storedAuthType, token: storedToken)
+        } else if let username = username, let password = password {
+            authType = nil
+            logger.info("Authenticating: \(username)")
+            request = AuthRequest(username: username, password: password)
+        } else {
             pendingCompletion?(VPNError.authenticationFailed("No credentials"))
             return
         }
 
-        // Clear stored credentials
-        UserDefaults.standard.removeObject(forKey: "vpn_username")
-        UserDefaults.standard.removeObject(forKey: "vpn_password")
-
-        logger.info("Authenticating: \(username)")
-
-        let request = AuthRequest(username: username, password: password)
         sendMessage(request) { [weak self] error in
             if let error = error {
                 self?.pendingCompletion?(error)
@@ -289,10 +325,23 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         switch message {
         case let response as AuthResponse:
             if response.success {
-                logger.info("Auth successful, token: \(response.sessionToken ?? "nil")")
+                logger.info("Auth successful, token: \(response.sessionToken != nil ? "issued" : "nil")")
                 sessionToken = response.sessionToken
+                // First SSO connect: the server issues a 30-day session token.
+                // Hand it to the app (App Group), which moves it to the Keychain
+                // and uses authType "session" for subsequent connects.
+                if authType == "sso", let issued = response.sessionToken, !issued.isEmpty,
+                   let shared = UserDefaults(suiteName: Self.appGroupId) {
+                    shared.set(issued, forKey: Self.ssoSessionTokenKey)
+                    shared.removeObject(forKey: Self.ssoSessionRejectedKey)
+                }
             } else {
                 logger.error("Auth failed: \(response.errorMessage ?? "")")
+                // A rejected session token is stale — flag it so the app clears
+                // the Keychain copy and requires SSO again.
+                if authType == "session", let shared = UserDefaults(suiteName: Self.appGroupId) {
+                    shared.set(true, forKey: Self.ssoSessionRejectedKey)
+                }
                 pendingCompletion?(VPNError.authenticationFailed(response.errorMessage ?? "Failed"))
                 pendingCompletion = nil
             }

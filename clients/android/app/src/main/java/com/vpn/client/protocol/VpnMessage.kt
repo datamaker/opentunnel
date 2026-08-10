@@ -26,15 +26,26 @@ enum class VpnMessageType(val value: Byte) {
 /**
  * Authentication request payload.
  *
- * JSON format:
+ * JSON format (password auth):
  * {"username":"","password":"","clientVersion":"","platform":"android"}
+ *
+ * JSON format (SSO / session auth — username/password omitted):
+ * {"clientVersion":"","platform":"android","authType":"sso"|"session","token":""}
+ *
+ * Optional fields are omitted from the wire when null (see the serializer's
+ * explicitNulls=false), keeping backward compatibility with older servers.
+ * - authType: "password" (default when absent) | "sso" (token = OIDC id_token)
+ *   | "session" (token = server-issued 30-day session token)
+ * - token: credential matching authType
  */
 @Serializable
 data class AuthRequest(
-    val username: String,
-    val password: String,
+    val username: String? = null,
+    val password: String? = null,
     val clientVersion: String,
-    val platform: String = "android"
+    val platform: String = "android",
+    val authType: String? = null,
+    val token: String? = null
 )
 
 /**

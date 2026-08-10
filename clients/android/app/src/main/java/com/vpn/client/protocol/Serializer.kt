@@ -1,5 +1,6 @@
 package com.vpn.client.protocol
 
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.nio.ByteBuffer
@@ -17,10 +18,14 @@ import java.nio.ByteOrder
  */
 object VpnMessageSerializer {
 
+    @OptIn(ExperimentalSerializationApi::class)
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
         isLenient = true
+        // Omit null optional fields (e.g. AuthRequest.authType/token) from the
+        // wire instead of encoding explicit nulls — keeps older servers happy.
+        explicitNulls = false
     }
 
     // ============ Serialization ============

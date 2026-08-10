@@ -204,11 +204,36 @@ public partial class MainView : UserControl
 
         try
         {
-            await _vpnTunnel.ConnectAsync(
-                serverAddress,
-                port,
-                _viewModel.Username!,
-                _viewModel.Password!);
+            if (_viewModel.AuthMode == CredentialStore.AuthModeSso)
+            {
+                // SSO session: no password — authenticate with the persisted
+                // 30-day session token ({authType:"session"}).
+                await _vpnTunnel.ConnectWithSessionTokenAsync(
+                    serverAddress,
+                    port,
+                    _viewModel.Username ?? string.Empty,
+                    _viewModel.SessionToken ?? string.Empty);
+            }
+            else
+            {
+                await _vpnTunnel.ConnectAsync(
+                    serverAddress,
+                    port,
+                    _viewModel.Username!,
+                    _viewModel.Password!);
+            }
+        }
+        catch (VpnSessionExpiredException ex)
+        {
+            // The stored session token was rejected (already cleared by the
+            // tunnel) — send the user back to the login screen to redo SSO.
+            _logger.LogWarning("SSO session token rejected; returning to login");
+            _isConnecting = false;
+            _viewModel.SessionToken = null;
+            _viewModel.IsAuthenticated = false;
+            MessageBox.Show(ex.Message, "SSO 재로그인 필요",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            LogoutRequested?.Invoke(this, EventArgs.Empty);
         }
         catch (Exception ex)
         {

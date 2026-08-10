@@ -46,6 +46,9 @@ fun LoginScreen(
 
     val isLoading by viewModel.isLoggingIn.collectAsState()
     val loginError by viewModel.loginError.collectAsState()
+    val ssoUserCode by viewModel.ssoUserCode.collectAsState()
+    val ssoVerificationUri by viewModel.ssoVerificationUri.collectAsState()
+    val ssoInProgress = ssoUserCode != null
 
     LaunchedEffect(Unit) {
         viewModel.loginSuccess.collect {
@@ -262,7 +265,7 @@ fun LoginScreen(
                 colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                if (isLoading) {
+                if (isLoading && !ssoInProgress) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(24.dp),
                         color = Color.White,
@@ -276,6 +279,107 @@ fun LoginScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(text = "Sign In", style = MaterialTheme.typography.titleMedium)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // ---- Divider ----
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                HorizontalDivider(modifier = Modifier.weight(1f))
+                Text(
+                    text = "또는",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+                HorizontalDivider(modifier = Modifier.weight(1f))
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            if (ssoInProgress) {
+                // ---- SSO in progress: show user code + fallback URI + cancel ----
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(28.dp),
+                        strokeWidth = 3.dp
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "브라우저에서 승인해 주세요",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = ssoUserCode ?: "",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "브라우저가 열리지 않으면 아래 주소에서 위 코드를 입력해 주세요",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = ssoVerificationUri ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    TextButton(onClick = { viewModel.cancelSsoLogin() }) {
+                        Text(text = "취소")
+                    }
+                }
+            } else {
+                // ---- Google SSO login (device flow) ----
+                val ssoEnabled = serverAddress.isNotBlank() && !isLoading
+                OutlinedButton(
+                    onClick = {
+                        focusManager.clearFocus()
+                        viewModel.loginWithSso(
+                            serverAddress = serverAddress,
+                            serverPort = serverPort.toIntOrNull() ?: 1194
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+                    enabled = ssoEnabled,
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.AccountCircle,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Google로 로그인 (Datasee SSO)",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+                if (serverAddress.isBlank()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "SSO 로그인에도 서버 주소가 필요합니다",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 

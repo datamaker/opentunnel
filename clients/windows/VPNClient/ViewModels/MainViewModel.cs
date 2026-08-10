@@ -25,9 +25,18 @@ public partial class MainViewModel : ObservableObject
     private string? _sessionToken;
 
     /// <summary>
+    /// How this session authenticates on (re)connect:
+    /// <see cref="CredentialStore.AuthModePassword"/> re-sends the account
+    /// password, <see cref="CredentialStore.AuthModeSso"/> re-sends the
+    /// server-issued session token with {authType:"session"}.
+    /// </summary>
+    [ObservableProperty]
+    private string _authMode = CredentialStore.AuthModePassword;
+
+    /// <summary>
     /// The account password, kept for the lifetime of the session so the tunnel
-    /// can re-authenticate on (re)connect. The server verifies the password on
-    /// every connection — the session token is not accepted as a credential.
+    /// can re-authenticate on (re)connect (password mode only — SSO sessions
+    /// have no password and reconnect with the session token instead).
     /// </summary>
     [ObservableProperty]
     private string? _password;
@@ -70,6 +79,7 @@ public partial class MainViewModel : ObservableObject
         // Subscribe to VPN tunnel events
         _vpnTunnel.ConnectionStateChanged += OnConnectionStateChanged;
         _vpnTunnel.ErrorOccurred += OnErrorOccurred;
+        _vpnTunnel.SessionTokenRefreshed += OnSessionTokenRefreshed;
 
         // Load saved settings
         LoadSavedSettings();
@@ -149,6 +159,13 @@ public partial class MainViewModel : ObservableObject
         _logger.LogError(e.Exception, "VPN Error: {Message}", e.Message);
     }
 
+    private void OnSessionTokenRefreshed(object? sender, string newToken)
+    {
+        // The tunnel already persisted the rotated token; keep our copy in sync
+        // so the next reconnect sends the fresh one.
+        SessionToken = newToken;
+    }
+
     [RelayCommand]
     private async Task ConnectAsync()
     {
@@ -171,7 +188,31 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            await _vpnTunnel.ConnectAsync(ServerAddress, ServerPort, Username!, Password!);
+            if (AuthMode == CredentialStore.AuthModeSso)
+            {
+                if (string.IsNullOrEmpty(SessionToken))
+                {
+                    ErrorMessage = "SSO 재로그인 필요: 저장된 세션이 없습니다. 다시 로그인해 주세요.";
+                    IsAuthenticated = false;
+                    return;
+                }
+
+                await _vpnTunnel.ConnectWithSessionTokenAsync(
+                    ServerAddress, ServerPort, Username ?? string.Empty, SessionToken);
+            }
+            else
+            {
+                await _vpnTunnel.ConnectAsync(ServerAddress, ServerPort, Username!, Password!);
+            }
+        }
+        catch (VpnSessionExpiredException ex)
+        {
+            // Token already cleared from the store by the tunnel; drop the
+            // in-memory session so the user is sent back to the login screen.
+            _logger.LogWarning("SSO session token rejected by server");
+            SessionToken = null;
+            IsAuthenticated = false;
+            ErrorMessage = ex.Message;
         }
         catch (Exception ex)
         {
@@ -209,6 +250,7 @@ public partial class MainViewModel : ObservableObject
         Username = null;
         SessionToken = null;
         Password = null;
+        AuthMode = CredentialStore.AuthModePassword;
         CredentialStore.Clear();
         _logger.LogInformation("User logged out");
     }

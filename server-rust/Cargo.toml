@@ -23,6 +23,8 @@ deadpool-postgres = "0.14"
 # Auth
 bcrypt = "0.15"
 jsonwebtoken = "9"
+# OIDC discovery / JWKS fetch for SSO (rustls, matching the server TLS stack).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Admin HTTP server
 axum = "0.7"

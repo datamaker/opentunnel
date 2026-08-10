@@ -236,7 +236,16 @@ struct MainView: View {
     private func connect() {
         vpnManager.serverAddress = "\(session.serverHost):\(session.serverPort)"
         Task {
-            try? await vpnManager.connect(username: session.username, password: session.password)
+            if session.authMethod == .sso {
+                guard let credential = session.ssoCredential() else {
+                    // No id_token and no session token — SSO must be redone.
+                    session.logout()
+                    return
+                }
+                try? await vpnManager.connect(authType: credential.authType, token: credential.token)
+            } else {
+                try? await vpnManager.connect(username: session.username, password: session.password)
+            }
         }
     }
 

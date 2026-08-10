@@ -60,14 +60,35 @@ impl ClientPlatform {
     }
 }
 
+/// How the client authenticates. Absent on the wire = `password`, so existing
+/// clients keep working unchanged.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthType {
+    /// Username + bcrypt-verified password (original behavior).
+    #[default]
+    Password,
+    /// `token` carries an OIDC id_token (RS256) from the internal IdP.
+    Sso,
+    /// `token` carries a previously-issued OpenTunnel session JWT (HS256).
+    Session,
+}
+
 /// Authentication request sent by the client.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuthRequest {
+    #[serde(default)]
     pub username: String,
+    #[serde(default)]
     pub password: String,
     #[serde(rename = "clientVersion", default)]
     pub client_version: String,
     pub platform: ClientPlatform,
+    #[serde(rename = "authType", default)]
+    pub auth_type: AuthType,
+    /// OIDC id_token (`authType: "sso"`) or session JWT (`authType: "session"`).
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 /// Authentication response returned to the client.

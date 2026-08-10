@@ -55,6 +55,36 @@ internal sealed partial class Settings : global::System.Configuration.Applicatio
 
     [global::System.Configuration.UserScopedSettingAttribute()]
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+    [global::System.Configuration.DefaultSettingValueAttribute("")]
+    public string SavedSessionTokenEnc
+    {
+        get
+        {
+            return ((string)(this["SavedSessionTokenEnc"]));
+        }
+        set
+        {
+            this["SavedSessionTokenEnc"] = value;
+        }
+    }
+
+    [global::System.Configuration.UserScopedSettingAttribute()]
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+    [global::System.Configuration.DefaultSettingValueAttribute("password")]
+    public string AuthMode
+    {
+        get
+        {
+            return ((string)(this["AuthMode"]));
+        }
+        set
+        {
+            this["AuthMode"] = value;
+        }
+    }
+
+    [global::System.Configuration.UserScopedSettingAttribute()]
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
     [global::System.Configuration.DefaultSettingValueAttribute("False")]
     public bool RememberMe
     {

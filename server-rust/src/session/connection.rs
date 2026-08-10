@@ -4,7 +4,9 @@
 //! handling in `index.ts`: authentication, config push, keepalive and data
 //! forwarding for a single client socket.
 
-use crate::protocol::{serializer, AuthResponse, ConfigPush, Frame, MessageBuffer, MessageType};
+use crate::protocol::{
+    serializer, AuthRequest, AuthResponse, AuthType, ConfigPush, Frame, MessageBuffer, MessageType,
+};
 use crate::state::SharedState;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -167,13 +169,45 @@ impl Connection {
             }
         };
 
-        tracing::info!("Session {}: auth request from {}", self.id, request.username);
-
-        let result = self
-            .state
-            .auth
-            .authenticate(&request.username, &request.password, request.platform, self.peer)
-            .await;
+        let result = match request.auth_type {
+            AuthType::Password => {
+                tracing::info!(
+                    "Session {}: password auth request from {}",
+                    self.id,
+                    request.username
+                );
+                self.state
+                    .auth
+                    .authenticate(&request.username, &request.password, request.platform, self.peer)
+                    .await
+            }
+            AuthType::Sso => {
+                tracing::info!("Session {}: SSO auth request", self.id);
+                self.authenticate_sso(&request).await
+            }
+            AuthType::Session => {
+                tracing::info!("Session {}: session-token auth request", self.id);
+                match request.token.as_deref() {
+                    Some(token) => {
+                        self.state
+                            .auth
+                            .authenticate_session_token(token, request.platform, self.peer)
+                            .await
+                    }
+                    None => {
+                        self.state
+                            .auth
+                            .log_auth_failure(
+                                request.platform,
+                                self.peer,
+                                "Session auth request missing token",
+                            )
+                            .await;
+                        Err("Session token is required".to_string())
+                    }
+                }
+            }
+        };
 
         let auth_ok = match result {
             Ok(ok) => ok,
@@ -227,10 +261,54 @@ impl Connection {
         tracing::info!(
             "Session {}: user {} authenticated, assigned IP {}",
             self.id,
-            request.username,
+            auth_ok.username,
             ip
         );
         true
+    }
+
+    /// Verify the OIDC id_token from an `authType: "sso"` request and log the
+    /// user in (JIT-provisioning on first login). SSO must be enabled
+    /// (`OIDC_ISSUER` set) and the request must carry a token.
+    async fn authenticate_sso(&self, request: &AuthRequest) -> crate::auth::AuthResult {
+        let Some(verifier) = self.state.sso.as_ref() else {
+            self.state
+                .auth
+                .log_auth_failure(
+                    request.platform,
+                    self.peer,
+                    "SSO auth attempted but OIDC_ISSUER is not configured (sso)",
+                )
+                .await;
+            return Err("SSO is not enabled on this server".to_string());
+        };
+        let Some(token) = request.token.as_deref() else {
+            self.state
+                .auth
+                .log_auth_failure(request.platform, self.peer, "SSO auth request missing token (sso)")
+                .await;
+            return Err("SSO token is required".to_string());
+        };
+
+        let identity = match verifier.verify_id_token(token).await {
+            Ok(identity) => identity,
+            Err(message) => {
+                self.state
+                    .auth
+                    .log_auth_failure(
+                        request.platform,
+                        self.peer,
+                        &format!("SSO id_token verification failed: {message} (sso)"),
+                    )
+                    .await;
+                return Err(message);
+            }
+        };
+
+        self.state
+            .auth
+            .authenticate_sso(&identity.email, identity.name.as_deref(), request.platform, self.peer)
+            .await
     }
 
     async fn send_auth_response(
