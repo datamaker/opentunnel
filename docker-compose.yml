@@ -29,6 +29,10 @@ services:
       - JWT_SECRET=${JWT_SECRET:-change-this-in-production}
       - TLS_CERT_PATH=/app/certs/server.crt
       - TLS_KEY_PATH=/app/certs/server.key
+      # SSO (optional): empty OIDC_ISSUER disables SSO auth
+      - OIDC_ISSUER=${OIDC_ISSUER:-}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-opentunnel}
+      - SSO_SESSION_TTL_DAYS=${SSO_SESSION_TTL_DAYS:-30}
     depends_on:
       db:
         condition: service_healthy
