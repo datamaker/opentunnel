@@ -52,6 +52,20 @@ async fn main() -> anyhow::Result<()> {
         .context("database initialization failed")?;
     tracing::info!("Database connected");
 
+    // Tunnel state lives in memory, so every sessions row predating this
+    // process is stale. Clearing them keeps the fresh in-memory IP pool from
+    // colliding with leftover assigned_ip rows after a restart.
+    {
+        let client = db.get().await.context("database initialization failed")?;
+        let stale = client
+            .execute("DELETE FROM sessions", &[])
+            .await
+            .context("failed to clear stale sessions")?;
+        if stale > 0 {
+            tracing::info!("Cleared {stale} stale session(s) from previous run");
+        }
+    }
+
     // Core services.
     let ip_pool = Arc::new(IpPool::new(&format!("{}/24", config.vpn.subnet)));
     let auth = Arc::new(AuthService::new(

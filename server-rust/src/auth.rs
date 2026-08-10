@@ -130,10 +130,12 @@ impl AuthService {
             .await
             .map_err(|_| "Internal server error".to_string())?;
 
+        // Legacy accounts store the email in `username` with an empty `email`
+        // column, so match either.
         let row = client
             .query_opt(
                 "SELECT id, username, is_active, max_connections \
-                 FROM users WHERE LOWER(email) = $1",
+                 FROM users WHERE LOWER(email) = $1 OR LOWER(username) = $1",
                 &[&email],
             )
             .await
