@@ -40,6 +40,11 @@ pub struct SplitSnapshot {
     pub domains: Vec<String>,
     /// Static routes plus resolved domain IPs, deduplicated and sorted.
     pub routes: Vec<String>,
+    /// The configured static routes alone — what the admin UI edits. Without
+    /// this a GET→edit→POST round-trip would freeze resolved domain IPs into
+    /// static config.
+    #[serde(rename = "staticRoutes")]
+    pub static_routes: Vec<String>,
 }
 
 impl SplitPolicy {
@@ -69,6 +74,7 @@ impl SplitPolicy {
             enabled: inner.enabled,
             domains: inner.domains.clone(),
             routes: set.into_iter().collect(),
+            static_routes: inner.routes.clone(),
         }
     }
 

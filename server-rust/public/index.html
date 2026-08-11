@@ -38,8 +38,17 @@
                 class="w-full bg-primary text-white py-2 rounded-lg hover:bg-blue-600 transition">
           로그인
         </button>
-        <p id="loginError" class="text-red-500 text-sm mt-2 hidden">비밀번호가 올바르지 않습니다</p>
       </form>
+      <p id="passwordDisabledNotice" class="text-amber-600 text-sm mt-2 hidden">
+        비밀번호 로그인이 비활성화되어 있습니다 (ADMIN_PASSWORD 미설정). SSO로 로그인하세요.
+      </p>
+      <div id="ssoDivider" class="flex items-center my-4 hidden">
+        <div class="flex-1 border-t"></div>
+        <span class="px-3 text-gray-400 text-sm">또는</span>
+        <div class="flex-1 border-t"></div>
+      </div>
+      <div id="googleSignIn" class="flex justify-center"></div>
+      <p id="loginError" class="text-red-500 text-sm mt-2 hidden">비밀번호가 올바르지 않습니다</p>
     </div>
   </div>
 
@@ -85,6 +94,10 @@
         <button onclick="showTab('logs')" id="tabLogs"
                 class="px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
           연결 로그
+        </button>
+        <button onclick="showTab('split')" id="tabSplit"
+                class="px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+          스플릿 터널
         </button>
       </div>
 
@@ -152,6 +165,51 @@
             <!-- Logs will be loaded here -->
           </tbody>
         </table>
+      </div>
+
+      <!-- Split Tunnel Tab -->
+      <div id="panelSplit" class="bg-white rounded-lg shadow hidden">
+        <div class="p-4 border-b flex justify-between items-center">
+          <h2 class="text-lg font-semibold">스플릿 터널 정책</h2>
+          <button onclick="saveSplit()"
+                  class="bg-primary text-white px-4 py-2 rounded-lg hover:bg-blue-600">
+            저장
+          </button>
+        </div>
+        <div class="p-4 space-y-4">
+          <label class="flex items-center">
+            <input type="checkbox" id="splitEnabled" class="mr-2">
+            <span class="text-gray-700 font-medium">스플릿 터널 활성화</span>
+            <span class="text-gray-400 text-sm ml-2">(끄면 전체 터널)</span>
+          </label>
+          <div>
+            <label class="block text-gray-700 text-sm font-bold mb-1">포함 도메인 (한 줄에 하나)</label>
+            <p class="text-gray-400 text-xs mb-2">
+              구체 도메인(crm.example.com)은 서버가 주기적으로 IP를 재해석해 접속 시 라우트로 내려주고,
+              와일드카드(*.example.com)는 클라이언트가 DNS 응답을 스니핑해 실시간으로 라우팅합니다.
+              CDN 도메인은 두 형태를 함께 넣는 것이 가장 안정적입니다.
+            </p>
+            <textarea id="splitDomains" rows="4"
+                      class="w-full px-3 py-2 border rounded-lg font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                      placeholder="crm.example.com&#10;*.example.com"></textarea>
+          </div>
+          <div>
+            <label class="block text-gray-700 text-sm font-bold mb-1">포함 IP 대역 (CIDR, 한 줄에 하나)</label>
+            <textarea id="splitRoutes" rows="4"
+                      class="w-full px-3 py-2 border rounded-lg font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                      placeholder="10.0.0.0/8&#10;1.2.3.4/32"></textarea>
+          </div>
+          <div>
+            <label class="block text-gray-700 text-sm font-bold mb-1">현재 유효 라우트 (정적 + 도메인 재해석 결과)</label>
+            <div id="splitEffective"
+                 class="w-full px-3 py-2 border rounded-lg bg-gray-50 font-mono text-sm text-gray-600 max-h-48 overflow-y-auto whitespace-pre"></div>
+          </div>
+          <p class="text-gray-400 text-xs">
+            저장하면 즉시 재해석되며, 이후에 연결하는 클라이언트부터 적용됩니다 (기존 연결은 재연결 필요).
+            서버 재시작 시 환경변수(SPLIT_*) 값으로 되돌아가므로 영구 반영은 .env에도 적용하세요.
+          </p>
+          <p id="splitStatus" class="text-sm hidden"></p>
+        </div>
       </div>
     </div>
   </div>
@@ -255,28 +313,88 @@
     }
 
     // Auth
+    function showLoginError(message) {
+      const el = document.getElementById('loginError');
+      el.textContent = message || '비밀번호가 올바르지 않습니다';
+      el.classList.remove('hidden');
+    }
+
+    function acceptToken(t) {
+      token = t;
+      localStorage.setItem('vpn_admin_token', t);
+      showDashboard();
+    }
+
     document.getElementById('loginForm').onsubmit = async (e) => {
       e.preventDefault();
       const password = document.getElementById('adminPassword').value;
 
       try {
-        const data = await fetch('/api/login', {
+        const res = await fetch('/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ password })
-        }).then(r => r.json());
+        });
+        const data = await res.json();
 
         if (data.token) {
-          token = data.token;
-          localStorage.setItem('vpn_admin_token', token);
-          showDashboard();
+          acceptToken(data.token);
         } else {
-          document.getElementById('loginError').classList.remove('hidden');
+          showLoginError(res.status === 429 ? '시도가 너무 많습니다. 잠시 후 다시 시도하세요.' : data.error);
         }
       } catch (err) {
-        document.getElementById('loginError').classList.remove('hidden');
+        showLoginError();
       }
     };
+
+    // Login methods: ask the server what is enabled, and set up the
+    // Google Identity Services button when SSO is configured.
+    async function initLoginScreen() {
+      try {
+        const cfg = await fetch('/api/auth/config').then(r => r.json());
+
+        if (!cfg.passwordLogin) {
+          document.getElementById('loginForm').classList.add('hidden');
+          document.getElementById('passwordDisabledNotice').classList.remove('hidden');
+        }
+
+        if (cfg.sso && cfg.clientId) {
+          if (cfg.passwordLogin) document.getElementById('ssoDivider').classList.remove('hidden');
+          const gis = document.createElement('script');
+          gis.src = 'https://accounts.google.com/gsi/client';
+          gis.onload = () => {
+            google.accounts.id.initialize({
+              client_id: cfg.clientId,
+              callback: async (response) => {
+                try {
+                  const res = await fetch('/api/login/sso', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ idToken: response.credential })
+                  });
+                  const data = await res.json();
+                  if (data.token) {
+                    acceptToken(data.token);
+                  } else {
+                    showLoginError(data.error || 'SSO 로그인 실패');
+                  }
+                } catch (err) {
+                  showLoginError('SSO 로그인 실패');
+                }
+              }
+            });
+            google.accounts.id.renderButton(
+              document.getElementById('googleSignIn'),
+              { theme: 'outline', size: 'large', width: 320 }
+            );
+          };
+          document.head.appendChild(gis);
+        }
+      } catch (err) {
+        console.error('Failed to load auth config', err);
+      }
+    }
+    initLoginScreen();
 
     function logout() {
       localStorage.removeItem('vpn_admin_token');
@@ -307,7 +425,7 @@
 
     // Tabs
     function showTab(tab) {
-      const tabs = ['users', 'sessions', 'logs'];
+      const tabs = ['users', 'sessions', 'logs', 'split'];
       tabs.forEach(t => {
         document.getElementById(`panel${t.charAt(0).toUpperCase() + t.slice(1)}`).classList.toggle('hidden', t !== tab);
         document.getElementById(`tab${t.charAt(0).toUpperCase() + t.slice(1)}`).classList.toggle('border-primary', t === tab);
@@ -319,6 +437,50 @@
       if (tab === 'users') loadUsers();
       if (tab === 'sessions') loadSessions();
       if (tab === 'logs') loadLogs();
+      if (tab === 'split') loadSplit();
+    }
+
+    // Split tunnel policy
+    function parseLines(id) {
+      return document.getElementById(id).value
+        .split(/[\n,]/).map(s => s.trim()).filter(s => s.length > 0);
+    }
+
+    async function loadSplit() {
+      try {
+        const s = await api('/api/split');
+        document.getElementById('splitEnabled').checked = !!s.enabled;
+        document.getElementById('splitDomains').value = (s.domains || []).join('\n');
+        // Edit only the configured static routes; the effective list (static +
+        // resolved domain IPs) is shown read-only below.
+        document.getElementById('splitRoutes').value = (s.staticRoutes || []).join('\n');
+        document.getElementById('splitEffective').textContent =
+          (s.routes || []).join('\n') || '(없음)';
+      } catch (err) {
+        console.error('Failed to load split policy', err);
+      }
+    }
+
+    async function saveSplit() {
+      const statusEl = document.getElementById('splitStatus');
+      try {
+        const s = await api('/api/split', {
+          method: 'POST',
+          body: JSON.stringify({
+            enabled: document.getElementById('splitEnabled').checked,
+            routes: parseLines('splitRoutes'),
+            domains: parseLines('splitDomains')
+          })
+        });
+        document.getElementById('splitEffective').textContent =
+          (s.routes || []).join('\n') || '(없음)';
+        statusEl.textContent = '저장됨 — 이후 연결하는 클라이언트부터 적용됩니다.';
+        statusEl.className = 'text-sm text-green-600';
+      } catch (err) {
+        statusEl.textContent = '저장 실패';
+        statusEl.className = 'text-sm text-red-600';
+      }
+      statusEl.classList.remove('hidden');
     }
 
     // Users
