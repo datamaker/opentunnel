@@ -395,6 +395,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 self.startKeepalive()
                 self.logger.info("Starting packet reading...")
                 self.startReadingPackets()
+                self.preResolveSplitDomains()
                 self.logger.info("Calling pendingCompletion(nil)...")
                 self.pendingCompletion?(nil)
                 self.logger.info("Tunnel setup complete!")
@@ -466,6 +467,43 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    /// Pre-resolve concrete (non-wildcard) split-tunnel domains by sending our
+    /// own A queries straight through the tunnel. The OS may hold cached DNS
+    /// answers — in which case no query the sniffer could learn from would ever
+    /// be sent — so a cached (possibly geo-stale) IP would be used with no
+    /// route installed. The responses come back through `handleInboundPacket`,
+    /// where `maybeLearnRoute` seeds the routes before the app needs them.
+    private func preResolveSplitDomains() {
+        guard let config = tunnelConfig, let matcher = domainMatcher, !matcher.isEmpty else { return }
+        guard let dns = config.dns.first(where: { CidrUtils.parse($0) != nil }) else { return }
+        let concrete = (config.includedDomains ?? []).filter { !$0.contains("*") }
+        guard !concrete.isEmpty else { return }
+        logger.info("Split tunnel: pre-resolving \(concrete.count) domain(s) through the tunnel")
+        for (i, domain) in concrete.enumerated() {
+            if let query = DnsQueryBuilder.buildAQuery(domain: domain,
+                                                       srcIP: config.assignedIP,
+                                                       dstIP: dns,
+                                                       srcPort: UInt16(49152 + (i % 8192)),
+                                                       id: UInt16(truncatingIfNeeded: 0x5350 &+ i)) {
+                sendMessage(DataPacket(payload: Data(query)))
+            }
+        }
+        // One retry a few seconds in, in case the first burst raced the server
+        // finishing session setup. Skipped once any route has been learned.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self = self, self.isRunning, self.dynamicRoutes.isEmpty else { return }
+            for (i, domain) in concrete.enumerated() {
+                if let query = DnsQueryBuilder.buildAQuery(domain: domain,
+                                                           srcIP: config.assignedIP,
+                                                           dstIP: dns,
+                                                           srcPort: UInt16(49152 + ((i + 1) % 8192)),
+                                                           id: UInt16(truncatingIfNeeded: 0x5A50 &+ i)) {
+                    self.sendMessage(DataPacket(payload: Data(query)))
+                }
+            }
+        }
+    }
+
     /// Snoop a DNS answer for a matched (CDN/wildcard) domain. If it carries IPs
     /// we have not routed yet, install the routes and deliver the answer to the
     /// app only *after* they are active, then return true (the caller must not
@@ -511,11 +549,24 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let version = (data[0] >> 4) & 0x0F
         let proto: NSNumber = version == 6 ? NSNumber(value: AF_INET6) : NSNumber(value: AF_INET)
 
-        // Under split tunnel, gate DNS answers for matched CDN/wildcard domains:
-        // install the learned route before the answer reaches the app. When
-        // gated, maybeLearnRoute delivers the packet once the route is active.
-        if version == 4, maybeLearnRoute(data, proto: proto) {
-            return
+        if version == 4, let matcher = domainMatcher, !matcher.isEmpty {
+            // The tunnel is IPv4-only, so an AAAA (or HTTPS-record) answer for a
+            // matched domain would send the OS over untunneled IPv6, straight
+            // past the split routes. Blank those answers (NODATA) to force the
+            // fallback to A records, which the route learning below handles.
+            if let stripped = DnsSniffer.strippedIPv6Response([UInt8](data)),
+               matcher.matches(stripped.qname) {
+                logger.info("Split tunnel: blanked IPv6/HTTPS DNS answers for \(stripped.qname)")
+                packetFlow.writePackets([Data(stripped.packet)], withProtocols: [proto])
+                return
+            }
+
+            // Gate DNS answers for matched CDN/wildcard domains: install the
+            // learned route before the answer reaches the app. When gated,
+            // maybeLearnRoute delivers the packet once the route is active.
+            if maybeLearnRoute(data, proto: proto) {
+                return
+            }
         }
 
         packetFlow.writePackets([data], withProtocols: [proto])
