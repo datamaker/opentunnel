@@ -101,6 +101,12 @@ struct DnsResponse {
     let addresses: [String]
 }
 
+/// A DNS response rewritten to carry no answers (NODATA), plus its query name.
+struct StrippedDnsResponse {
+    let qname: String
+    let packet: [UInt8]
+}
+
 /// Minimal DNS-over-UDP response sniffer. Given a raw IPv4 packet, returns the
 /// query name and any A-record IPv4s if it is a DNS response (UDP src port 53),
 /// else nil. Handles DNS name compression pointers.
@@ -120,6 +126,68 @@ enum DnsSniffer {
 
     static func parse(_ data: Data) -> DnsResponse? {
         parse([UInt8](data))
+    }
+
+    /// If `packet` is a DNS response to an AAAA (28) or HTTPS/SVCB (65) query,
+    /// rebuild it with zero answer/authority/additional records (a NODATA
+    /// response), preserving the header flags and question section. The caller
+    /// decides whether the query name warrants it (split-tunnel domain match).
+    ///
+    /// Rationale: the tunnel is IPv4-only, so an AAAA answer for a matched
+    /// domain sends the OS over untunneled IPv6, straight past the split
+    /// routes. Blanking AAAA (and HTTPS, whose ipv6hint has the same effect)
+    /// forces the fallback to A records, which the sniffer routes correctly.
+    static func strippedIPv6Response(_ packet: [UInt8]) -> StrippedDnsResponse? {
+        if packet.count < 20 { return nil }
+        if (Int(packet[0]) >> 4) & 0x0f != 4 { return nil }
+        let ihl = Int(packet[0] & 0x0f) * 4
+        if ihl < 20 || packet.count < ihl + 8 { return nil }
+        if Int(packet[9]) != 17 { return nil } // UDP
+        if (Int(packet[ihl]) << 8) | Int(packet[ihl + 1]) != 53 { return nil } // src port
+        let dnsStart = ihl + 8
+        if packet.count < dnsStart + 12 { return nil }
+        let flags = u16(packet, dnsStart + 2)
+        if (flags >> 15) & 1 != 1 { return nil } // must be a response
+        let qdCount = u16(packet, dnsStart + 4)
+        let anCount = u16(packet, dnsStart + 6)
+        let nsCount = u16(packet, dnsStart + 8)
+        let arCount = u16(packet, dnsStart + 10)
+        if qdCount < 1 { return nil }
+        if anCount == 0, nsCount == 0, arCount == 0 { return nil } // already empty
+
+        guard let (qname, afterQname) = readName(packet, dnsStart + 12, dnsStart) else { return nil }
+        if afterQname + 4 > packet.count { return nil }
+        let qtype = u16(packet, afterQname)
+        if qtype != 28, qtype != 65 { return nil } // AAAA / HTTPS only
+        var qEnd = afterQname + 4
+        if qdCount > 1 {
+            for _ in 1 ..< qdCount {
+                guard let next = skipName(packet, qEnd, dnsStart) else { return nil }
+                qEnd = next + 4
+            }
+        }
+        if qEnd > packet.count { return nil }
+
+        // DNS header + question section(s) only, with record counts zeroed.
+        var dns = Array(packet[dnsStart ..< qEnd])
+        dns[6] = 0; dns[7] = 0    // ANCOUNT
+        dns[8] = 0; dns[9] = 0    // NSCOUNT
+        dns[10] = 0; dns[11] = 0  // ARCOUNT
+
+        var out = Array(packet[0 ..< dnsStart])
+        out.append(contentsOf: dns)
+        let udpLen = 8 + dns.count
+        out[ihl + 4] = UInt8((udpLen >> 8) & 0xff)
+        out[ihl + 5] = UInt8(udpLen & 0xff)
+        out[ihl + 6] = 0 // UDP checksum 0 = "not computed" (valid over IPv4)
+        out[ihl + 7] = 0
+        out[2] = UInt8((out.count >> 8) & 0xff)
+        out[3] = UInt8(out.count & 0xff)
+        out[10] = 0; out[11] = 0
+        let ck = ipv4HeaderChecksum(out, headerLen: ihl)
+        out[10] = UInt8((ck >> 8) & 0xff)
+        out[11] = UInt8(ck & 0xff)
+        return StrippedDnsResponse(qname: qname, packet: out)
     }
 
     private static func parseDns(_ p: [UInt8], _ start: Int) -> DnsResponse? {
@@ -193,5 +261,71 @@ enum DnsSniffer {
 
     private static func u16(_ p: [UInt8], _ i: Int) -> Int {
         (Int(p[i]) << 8) | Int(p[i + 1])
+    }
+}
+
+/// RFC 1071 checksum over the IPv4 header (checksum field must be zeroed first).
+func ipv4HeaderChecksum(_ p: [UInt8], headerLen: Int) -> Int {
+    var sum = 0
+    var i = 0
+    while i + 1 < headerLen {
+        sum += (Int(p[i]) << 8) | Int(p[i + 1])
+        i += 2
+    }
+    while sum > 0xffff { sum = (sum & 0xffff) + (sum >> 16) }
+    return ~sum & 0xffff
+}
+
+/// Builds raw IPv4/UDP DNS A-record queries. Used to pre-resolve split-tunnel
+/// domains through the tunnel right after it comes up: the OS may be holding a
+/// cached answer (so no query the sniffer could learn from would ever be sent),
+/// and the first user connection would otherwise race ahead of route learning.
+enum DnsQueryBuilder {
+    static func buildAQuery(domain: String, srcIP: String, dstIP: String,
+                            srcPort: UInt16, id: UInt16) -> [UInt8]? {
+        guard let src = ipv4Bytes(srcIP), let dst = ipv4Bytes(dstIP) else { return nil }
+
+        // DNS: header (RD set, one question) + QNAME + QTYPE=A, QCLASS=IN.
+        var dns: [UInt8] = [UInt8((id >> 8) & 0xff), UInt8(id & 0xff),
+                            0x01, 0x00,
+                            0, 1, 0, 0, 0, 0, 0, 0]
+        for label in domain.split(separator: ".") {
+            let bytes = Array(label.utf8)
+            if bytes.isEmpty || bytes.count > 63 { return nil }
+            dns.append(UInt8(bytes.count))
+            dns.append(contentsOf: bytes)
+        }
+        dns.append(0)
+        dns.append(contentsOf: [0, 1, 0, 1])
+
+        let udpLen = 8 + dns.count
+        let udp: [UInt8] = [UInt8((srcPort >> 8) & 0xff), UInt8(srcPort & 0xff),
+                            0, 53,
+                            UInt8((udpLen >> 8) & 0xff), UInt8(udpLen & 0xff),
+                            0, 0] // checksum optional over IPv4
+
+        let totalLen = 20 + udpLen
+        var ip: [UInt8] = [0x45, 0,
+                           UInt8((totalLen >> 8) & 0xff), UInt8(totalLen & 0xff),
+                           UInt8((id >> 8) & 0xff), UInt8(id & 0xff),
+                           0, 0,
+                           64, 17, 0, 0]
+        ip.append(contentsOf: src)
+        ip.append(contentsOf: dst)
+        let ck = ipv4HeaderChecksum(ip, headerLen: 20)
+        ip[10] = UInt8((ck >> 8) & 0xff)
+        ip[11] = UInt8(ck & 0xff)
+        return ip + udp + dns
+    }
+
+    private static func ipv4Bytes(_ s: String) -> [UInt8]? {
+        let parts = s.split(separator: ".", omittingEmptySubsequences: false)
+        if parts.count != 4 { return nil }
+        var out: [UInt8] = []
+        for part in parts {
+            guard let v = Int(part), v >= 0, v <= 255 else { return nil }
+            out.append(UInt8(v))
+        }
+        return out
     }
 }

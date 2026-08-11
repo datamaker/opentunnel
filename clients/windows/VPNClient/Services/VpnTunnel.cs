@@ -186,6 +186,13 @@ public class VpnTunnel : IDisposable
             _logger.LogInformation("Starting packet forwarding");
             StartPacketForwarding(cancellationToken);
 
+            // Seed learned routes for concrete split domains, bypassing any
+            // stale OS DNS cache (see PreResolveSplitDomainsAsync).
+            if (_config.SplitTunnel)
+            {
+                await PreResolveSplitDomainsAsync();
+            }
+
             IsConnected = true;
             RaiseConnectionStateChanged(ConnectionState.Connected, _config.AssignedIP);
             _logger.LogInformation("VPN connection established successfully");
@@ -324,6 +331,55 @@ public class VpnTunnel : IDisposable
     }
 
     /// <summary>
+    /// If the packet is a DNS answer to an AAAA/HTTPS query for a matched
+    /// split-tunnel domain, return a rewritten no-answer (NODATA) packet;
+    /// otherwise null. See <see cref="DnsSniffer.StripIPv6Response"/>.
+    /// </summary>
+    private byte[]? StripIPv6AnswersIfMatched(byte[] packet)
+    {
+        var matcher = _domainMatcher;
+        if (matcher == null || matcher.IsEmpty) return null;
+        var stripped = DnsSniffer.StripIPv6Response(packet);
+        if (stripped == null || !matcher.Matches(stripped.QName)) return null;
+        _logger.LogInformation("Split tunnel: blanked IPv6/HTTPS DNS answers for {Domain}", stripped.QName);
+        return stripped.Packet;
+    }
+
+    /// <summary>
+    /// Pre-resolve concrete (non-wildcard) split-tunnel domains by sending our
+    /// own A queries straight through the tunnel. The OS may hold cached DNS
+    /// answers — in which case no query the sniffer could learn from would ever
+    /// be sent — so a cached (possibly geo-stale) IP would be used with no
+    /// route installed. The responses come back through the receive loop, where
+    /// <see cref="MaybeLearnRouteAsync"/> seeds the routes before they're needed.
+    /// </summary>
+    private async Task PreResolveSplitDomainsAsync()
+    {
+        var matcher = _domainMatcher;
+        if (_config == null || matcher == null || matcher.IsEmpty) return;
+        var dns = (_config.Dns ?? Array.Empty<string>()).FirstOrDefault(d => CidrUtils.Parse(d) != null);
+        if (dns == null || _config.AssignedIP == null) return;
+        var concrete = (_config.IncludedDomains ?? Array.Empty<string>())
+            .Where(d => !d.Contains('*')).ToArray();
+        if (concrete.Length == 0) return;
+
+        _logger.LogInformation("Split tunnel: pre-resolving {Count} domain(s) through the tunnel", concrete.Length);
+        for (var i = 0; i < concrete.Length; i++)
+        {
+            var query = DnsQueryBuilder.BuildAQuery(concrete[i], _config.AssignedIP, dns,
+                (ushort)(49152 + (i % 8192)), (ushort)(0x5350 + i));
+            if (query != null)
+            {
+                await _tlsConnection.SendMessageAsync(new VpnMessage
+                {
+                    Type = MessageType.DataPacket,
+                    Payload = query
+                });
+            }
+        }
+    }
+
+    /// <summary>
     /// Snoop a DNS answer for a matched (CDN/wildcard) domain. If it carries IPs
     /// we have not routed yet, install the routes and only return once they are
     /// in place. The caller awaits this before delivering the DNS answer to the
@@ -380,13 +436,26 @@ public class VpnTunnel : IDisposable
                     switch (message.Type)
                     {
                         case MessageType.DataPacket:
-                            // Gate: install any newly-learned split route BEFORE
-                            // delivering the DNS answer, so the app's first
-                            // connection to the freshly-resolved IP uses the
-                            // tunnel instead of leaking (WAF 403).
-                            await MaybeLearnRouteAsync(message.Payload);
+                            var payload = message.Payload;
+                            var stripped = StripIPv6AnswersIfMatched(payload);
+                            if (stripped != null)
+                            {
+                                // IPv4-only tunnel: a AAAA/HTTPS answer for a
+                                // matched split domain would send Windows over
+                                // untunneled IPv6, past the split routes —
+                                // deliver a blanked (NODATA) answer instead.
+                                payload = stripped;
+                            }
+                            else
+                            {
+                                // Gate: install any newly-learned split route
+                                // BEFORE delivering the DNS answer, so the app's
+                                // first connection to the freshly-resolved IP
+                                // uses the tunnel instead of leaking (WAF 403).
+                                await MaybeLearnRouteAsync(payload);
+                            }
                             // Forward IP packet to TUN interface
-                            await _wintunAdapter.WritePacketAsync(message.Payload);
+                            await _wintunAdapter.WritePacketAsync(payload);
                             Interlocked.Add(ref _bytesReceived, message.Payload.Length);
                             Interlocked.Increment(ref _packetsReceived);
                             break;
