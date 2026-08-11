@@ -47,7 +47,7 @@ fun MainScreen(
     onLogoutClick: () -> Unit
 ) {
     val connectionState by viewModel.connectionState.collectAsState()
-    val username by viewModel.username.collectAsState()
+    val displayName by viewModel.displayName.collectAsState()
     val serverAddress by viewModel.serverAddress.collectAsState()
     val serverPort by viewModel.serverPort.collectAsState()
     val assignedIp by viewModel.assignedIp.collectAsState()
@@ -64,7 +64,7 @@ fun MainScreen(
     Column(modifier = Modifier.fillMaxSize()) {
         // ---- Header ----
         Header(
-            username = username,
+            displayName = displayName,
             onSettingsClick = onSettingsClick,
             onLogoutClick = onLogoutClick
         )
@@ -108,7 +108,7 @@ fun MainScreen(
 
 @Composable
 private fun Header(
-    username: String,
+    displayName: String,
     onSettingsClick: () -> Unit,
     onLogoutClick: () -> Unit
 ) {
@@ -126,7 +126,7 @@ private fun Header(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = username.ifBlank { "Not signed in" },
+                    text = displayName.ifBlank { "Not signed in" },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

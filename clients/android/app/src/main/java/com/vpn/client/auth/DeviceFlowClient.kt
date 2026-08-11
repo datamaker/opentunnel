@@ -36,6 +36,31 @@ class DeviceFlowClient {
         private const val READ_TIMEOUT_MS = 10_000
         private const val DEFAULT_INTERVAL_SEC = 5
         private const val SLOW_DOWN_BACKOFF_SEC = 5
+
+        /**
+         * Best-effort read of the `email` claim from an id_token (JWT), for
+         * display only — the server is what actually validates the token.
+         * Mirrors DeviceFlowService.email(fromIdToken:) on the Apple clients.
+         */
+        fun emailFromIdToken(idToken: String): String? {
+            val parts = idToken.split(".")
+            if (parts.size < 2) return null
+            return try {
+                val payload = android.util.Base64.decode(
+                    parts[1],
+                    android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or
+                        android.util.Base64.NO_WRAP
+                )
+                val claims = Json { ignoreUnknownKeys = true }
+                    .parseToJsonElement(String(payload, Charsets.UTF_8))
+                    .let { it as? kotlinx.serialization.json.JsonObject } ?: return null
+                (claims["email"] as? kotlinx.serialization.json.JsonPrimitive)
+                    ?.content
+                    ?.takeIf { it.isNotBlank() }
+            } catch (e: Exception) {
+                null
+            }
+        }
     }
 
     private val json = Json { ignoreUnknownKeys = true }

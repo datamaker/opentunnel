@@ -2,9 +2,9 @@
 //  LoginView.swift
 //  VPNClient
 //
-//  Login screen for the macOS OpenTunnel client.
-//  Visual design matches the iOS LoginView (shield.checkered gradient logo,
-//  card-style fields, gradient Sign In button).
+//  Login screen, shared by the iOS, iPadOS and macOS clients
+//  (shield.checkered gradient logo, card-style fields, gradient Sign In
+//  button, Datasee SSO device flow).
 //
 
 import SwiftUI
@@ -40,6 +40,9 @@ struct LoginView: View {
             }
             .padding()
         }
+        // The port field uses a number pad, which has no return key to dismiss
+        // it with — dragging the form is the way out on a phone.
+        .scrollDismissesKeyboard(.interactively)
         .background(Color.groupedBackground)
         .onAppear {
             loadSavedSettings()
@@ -91,6 +94,7 @@ struct LoginView: View {
                             .foregroundColor(.gray)
                         TextField("Server Address", text: $serverAddress)
                             .textFieldStyle(.plain)
+                            .textFieldKind(.host)
                     }
                     .padding()
                     .background(Color.cardBackground)
@@ -101,6 +105,7 @@ struct LoginView: View {
                         TextField("Port", text: $serverPort)
                             .textFieldStyle(.plain)
                             .multilineTextAlignment(.center)
+                            .textFieldKind(.port)
                     }
                     .padding()
                     .frame(width: 80)
@@ -121,6 +126,7 @@ struct LoginView: View {
                         .foregroundColor(.gray)
                     TextField("Username", text: $username)
                         .textFieldStyle(.plain)
+                        .textFieldKind(.username)
                 }
                 .padding()
                 .background(Color.cardBackground)
@@ -134,9 +140,13 @@ struct LoginView: View {
                     if showingPassword {
                         TextField("Password", text: $password)
                             .textFieldStyle(.plain)
+                            .textFieldKind(.password)
+                            .onSubmit { if isFormValid { login() } }
                     } else {
                         SecureField("Password", text: $password)
                             .textFieldStyle(.plain)
+                            .textFieldKind(.password)
+                            .onSubmit { if isFormValid { login() } }
                     }
 
                     Button {
@@ -144,6 +154,7 @@ struct LoginView: View {
                     } label: {
                         Image(systemName: showingPassword ? "eye.slash.fill" : "eye.fill")
                             .foregroundColor(.gray)
+                            .touchTarget()
                     }
                     .buttonStyle(.plain)
                 }
