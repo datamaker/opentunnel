@@ -138,6 +138,48 @@ fn env_bool(key: &str, default: bool) -> bool {
 impl Config {
     /// Build a [`Config`] from the process environment, applying the same
     /// defaults as the original server.
+    /// Overlay database-stored settings on top of the environment.
+    ///
+    /// Per key, not wholesale: anything the operator has never edited keeps its
+    /// environment value, so an existing deployment behaves identically until
+    /// someone changes something in the panel. Unparseable values are logged
+    /// and skipped rather than taking the server down — the environment value
+    /// is always a working fallback.
+    pub fn apply_overrides(&mut self, overrides: &std::collections::HashMap<String, String>) {
+        fn csv(raw: &str) -> Vec<String> {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        }
+
+        for (key, raw) in overrides {
+            let value = raw.trim();
+            match key.as_str() {
+                "SPLIT_TUNNEL" => self.split.enabled = value == "true",
+                "SPLIT_INCLUDE_ROUTES" => self.split.routes = csv(value),
+                "SPLIT_INCLUDE_DOMAINS" => self.split.domains = csv(value),
+                "SPLIT_DNS_REFRESH_SECS" => match value.parse() {
+                    Ok(v) => self.split.refresh_secs = v,
+                    Err(_) => tracing::warn!("settings: {key}={value:?} is not a number, keeping env"),
+                },
+                "VPN_DNS" => self.vpn.dns = csv(value),
+                "VPN_MTU" => match value.parse() {
+                    Ok(v) => self.vpn.mtu = v,
+                    Err(_) => tracing::warn!("settings: {key}={value:?} is not a number, keeping env"),
+                },
+                "SSO_ALLOWED_DOMAINS" => self.sso.allowed_domains = csv(value),
+                "SSO_SESSION_TTL_DAYS" => match value.parse() {
+                    Ok(v) => self.sso.session_ttl_days = v,
+                    Err(_) => tracing::warn!("settings: {key}={value:?} is not a number, keeping env"),
+                },
+                "ADMIN_SSO_EMAILS" => self.admin.sso_emails = csv(value),
+                other => tracing::warn!("settings: ignoring unknown key {other:?}"),
+            }
+        }
+    }
+
     pub fn from_env() -> Self {
         Config {
             server: ServerConfig {

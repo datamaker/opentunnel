@@ -6,6 +6,7 @@
 use crate::auth::email_allowed;
 use crate::config::AdminConfig;
 use crate::db::DbPool;
+use crate::settings::{self, Apply, Store};
 use crate::split::SplitPolicy;
 use crate::sso::SsoVerifier;
 use axum::{
@@ -35,6 +36,14 @@ const MAX_LOGIN_FAILURES: u32 = 5;
 const LOCKOUT_MS: i64 = 60_000;
 const MIN_USER_PASSWORD_LEN: usize = 8;
 
+/// A panel session. `actor` is what the audit log records — an email for an
+/// SSO or forward-auth login, or a marker for the shared password.
+#[derive(Clone, Debug)]
+struct Session {
+    actor: String,
+    expires: i64,
+}
+
 #[derive(Default)]
 struct LoginAttempts {
     failures: u32,
@@ -51,19 +60,30 @@ struct AdminState {
     sso: Option<Arc<SsoVerifier>>,
     /// Client id exposed to the panel for Google Identity Services.
     sso_client_id: String,
-    /// Allowlist for admin SSO logins. Empty = admin SSO disabled.
-    sso_emails: Vec<String>,
     /// Parsed `ADMIN_TRUSTED_PROXIES`. Empty = forward-auth login disabled.
     trusted_proxies: Vec<IpNet>,
-    tokens: Arc<Mutex<HashMap<String, i64>>>,
+    /// Live panel sessions: token -> who it belongs to and when it lapses.
+    tokens: Arc<Mutex<HashMap<String, Session>>>,
     attempts: Arc<Mutex<HashMap<IpAddr, LoginAttempts>>>,
     split: Arc<SplitPolicy>,
+    settings: Arc<Store>,
+    /// The live copies of settings the panel can change, so an edit takes
+    /// effect without a restart.
+    auth: Arc<crate::auth::AuthService>,
+    /// Allowlist for admin logins. Empty = SSO/forward-auth disabled.
+    /// Behind a lock: the panel can edit it, and the change must apply to
+    /// the very next login rather than at the next restart.
+    sso_emails: Arc<std::sync::RwLock<Vec<String>>>,
 }
 
 impl AdminState {
+    fn sso_emails(&self) -> Vec<String> {
+        self.sso_emails.read().unwrap().clone()
+    }
+
     /// Forward-auth needs a proxy to trust *and* an allowlist to check against.
     fn forward_auth_enabled(&self) -> bool {
-        !self.trusted_proxies.is_empty() && !self.sso_emails.is_empty()
+        !self.trusted_proxies.is_empty() && !self.sso_emails().is_empty()
     }
 }
 
@@ -79,6 +99,7 @@ fn db_error() -> ApiError {
 }
 
 /// Start the admin server; runs until the process exits.
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     cfg: AdminConfig,
     db: DbPool,
@@ -86,6 +107,8 @@ pub async fn serve(
     sso: Option<Arc<SsoVerifier>>,
     sso_client_id: String,
     production: bool,
+    settings: Arc<Store>,
+    auth: Arc<crate::auth::AuthService>,
 ) -> anyhow::Result<()> {
     // Refuse the compiled-in default password in production: a panel that
     // manages VPN accounts must not be reachable with known credentials.
@@ -136,8 +159,10 @@ pub async fn serve(
         password_login,
         sso: admin_sso,
         sso_client_id,
-        sso_emails: cfg.sso_emails,
+        sso_emails: Arc::new(std::sync::RwLock::new(cfg.sso_emails)),
         trusted_proxies,
+        settings,
+        auth,
         tokens: Arc::new(Mutex::new(HashMap::new())),
         attempts: Arc::new(Mutex::new(HashMap::new())),
         split,
@@ -149,6 +174,8 @@ pub async fn serve(
         .route("/api/login", post(login))
         .route("/api/login/sso", post(login_sso))
         .route("/api/login/forward-auth", post(login_forward_auth))
+        .route("/api/settings", get(get_settings).put(put_settings))
+        .route("/api/audit", get(get_audit))
         .route("/api/logout", post(logout))
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/:id", put(update_user).delete(delete_user))
@@ -260,17 +287,19 @@ fn record_login_success(state: &AdminState, ip: IpAddr) {
     state.attempts.lock().unwrap().remove(&ip);
 }
 
-fn issue_token(state: &AdminState) -> String {
+fn issue_token(state: &AdminState, actor: &str) -> String {
     let token = format!(
         "{}{}",
         Uuid::new_v4().simple(),
         Uuid::new_v4().simple()
     );
-    state
-        .tokens
-        .lock()
-        .unwrap()
-        .insert(token.clone(), now_ms() + SESSION_TTL_MS);
+    state.tokens.lock().unwrap().insert(
+        token.clone(),
+        Session {
+            actor: actor.to_string(),
+            expires: now_ms() + SESSION_TTL_MS,
+        },
+    );
     token
 }
 
@@ -349,7 +378,8 @@ mod tests {
 /// Validate the bearer token against the in-memory session store. Tokens are
 /// accepted from the Authorization header only — query-string tokens leak
 /// into access logs, browser history and referrers.
-fn check_auth(state: &AdminState, headers: &HeaderMap) -> Result<(), ApiError> {
+/// Validate the bearer token and return who it belongs to.
+fn check_auth(state: &AdminState, headers: &HeaderMap) -> Result<String, ApiError> {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -361,7 +391,7 @@ fn check_auth(state: &AdminState, headers: &HeaderMap) -> Result<(), ApiError> {
 
     let mut tokens = state.tokens.lock().unwrap();
     match tokens.get(token) {
-        Some(&expires) if now_ms() <= expires => Ok(()),
+        Some(session) if now_ms() <= session.expires => Ok(session.actor.clone()),
         Some(_) => {
             tokens.remove(token);
             Err(err(StatusCode::UNAUTHORIZED, "Session expired"))
@@ -439,13 +469,13 @@ async fn login_forward_auth(
         return Err(err(StatusCode::UNAUTHORIZED, "No authenticated identity"));
     };
 
-    if !email_allowed(email, &state.sso_emails) {
+    if !email_allowed(email, &state.sso_emails()) {
         tracing::warn!("Forward-auth login rejected for {email} (not in ADMIN_SSO_EMAILS)");
         return Err(err(StatusCode::FORBIDDEN, "This account is not an admin"));
     }
 
     tracing::info!("Admin forward-auth login: {email}");
-    Ok(Json(json!({ "token": issue_token(&state), "email": email })))
+    Ok(Json(json!({ "token": issue_token(&state, email), "email": email })))
 }
 
 async fn login(
@@ -462,7 +492,8 @@ async fn login(
         return Err(err(StatusCode::UNAUTHORIZED, "Invalid password"));
     }
     record_login_success(&state, peer.ip());
-    Ok(Json(json!({ "token": issue_token(&state) })))
+    // The shared password names no person; the audit log says so plainly.
+    Ok(Json(json!({ "token": issue_token(&state, "password-login") })))
 }
 
 #[derive(Deserialize)]
@@ -491,7 +522,7 @@ async fn login_sso(
         }
     };
 
-    if !email_allowed(&identity.email, &state.sso_emails) {
+    if !email_allowed(&identity.email, &state.sso_emails()) {
         record_login_failure(&state, peer.ip());
         tracing::warn!(
             "Admin SSO login rejected for {} (not in ADMIN_SSO_EMAILS)",
@@ -502,7 +533,7 @@ async fn login_sso(
 
     record_login_success(&state, peer.ip());
     tracing::info!("Admin SSO login: {}", identity.email);
-    Ok(Json(json!({ "token": issue_token(&state), "email": identity.email })))
+    Ok(Json(json!({ "token": issue_token(&state, &identity.email), "email": identity.email })))
 }
 
 async fn logout(State(state): State<AdminState>, headers: HeaderMap) -> ApiResult {
@@ -884,11 +915,181 @@ async fn set_split(
     headers: HeaderMap,
     Json(body): Json<SplitBody>,
 ) -> ApiResult {
-    check_auth(&state, &headers)?;
+    let actor = check_auth(&state, &headers)?;
+
+    // Persist before applying. The policy used to live only in memory, so a
+    // container restart silently reverted whatever was set here back to the
+    // environment — losing work with no error to notice.
+    for (key, value) in [
+        ("SPLIT_TUNNEL", body.enabled.to_string()),
+        ("SPLIT_INCLUDE_ROUTES", body.routes.join(",")),
+        ("SPLIT_INCLUDE_DOMAINS", body.domains.join(",")),
+    ] {
+        if let Err(e) = state.settings.set(key, &value, &actor).await {
+            tracing::error!("split: failed to persist {key}: {e}");
+            return Err(err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "정책을 저장하지 못했습니다 — 적용하지 않았습니다",
+            ));
+        }
+    }
+
     state
         .split
         .update(body.enabled, body.routes, body.domains)
         .await;
-    tracing::info!("Split-tunnel policy updated via admin API");
+    tracing::info!("Split-tunnel policy updated via admin API by {actor}");
     Ok(Json(split_json(&state.split.snapshot())))
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+/// The editable settings with their current values, so the panel can render a
+/// form without knowing the schema. `source` tells the operator whether a value
+/// is still the deployment default or something they changed.
+async fn get_settings(State(state): State<AdminState>, headers: HeaderMap) -> ApiResult {
+    check_auth(&state, &headers)?;
+    let stored = state.settings.load().await;
+    let live = state.split.snapshot();
+
+    let items: Vec<Value> = settings::EDITABLE
+        .iter()
+        .map(|def| {
+            // Split-tunnel values are read back from the live policy: it is the
+            // thing actually in force, and it may have been changed in this
+            // process since the row was written.
+            let effective = match def.key {
+                "SPLIT_TUNNEL" => Some(live.enabled.to_string()),
+                "SPLIT_INCLUDE_ROUTES" => Some(live.static_routes.join(",")),
+                "SPLIT_INCLUDE_DOMAINS" => Some(live.domains.join(",")),
+                "ADMIN_SSO_EMAILS" => Some(state.sso_emails().join(",")),
+                _ => stored.get(def.key).cloned(),
+            };
+            json!({
+                "key": def.key,
+                "kind": def.kind,
+                "apply": def.apply,
+                "group": def.group,
+                "label": def.label,
+                "help": def.help,
+                "value": effective.unwrap_or_default(),
+                "source": if stored.contains_key(def.key) { "db" } else { "env" },
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({ "settings": items })))
+}
+
+#[derive(Deserialize)]
+struct SettingsBody {
+    /// Only the keys being changed; anything omitted is left alone.
+    values: HashMap<String, String>,
+}
+
+async fn put_settings(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Json(body): Json<SettingsBody>,
+) -> ApiResult {
+    let actor = check_auth(&state, &headers)?;
+
+    // Validate everything before writing anything, so a typo in one field
+    // cannot leave the rest half-applied.
+    for (key, value) in &body.values {
+        settings::validate(key, value).map_err(|e| err(StatusCode::BAD_REQUEST, &e))?;
+    }
+
+    for (key, value) in &body.values {
+        state
+            .settings
+            .set(key, value, &actor)
+            .await
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+    }
+
+    // Push the live-applied ones into the running state. The rest take effect
+    // at the next restart, which `apply` tells the panel to say out loud.
+    let touches_split = body.values.keys().any(|k| k.starts_with("SPLIT_"));
+    if touches_split {
+        let merged = state.settings.load().await;
+        let get = |key: &str, fallback: Vec<String>| -> Vec<String> {
+            merged
+                .get(key)
+                .map(|raw| {
+                    raw.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or(fallback)
+        };
+        let current = state.split.snapshot();
+        let enabled = merged
+            .get("SPLIT_TUNNEL")
+            .map(|v| v == "true")
+            .unwrap_or(current.enabled);
+        state
+            .split
+            .update(
+                enabled,
+                get("SPLIT_INCLUDE_ROUTES", current.static_routes),
+                get("SPLIT_INCLUDE_DOMAINS", current.domains),
+            )
+            .await;
+    }
+
+    if let Some(raw) = body.values.get("SSO_ALLOWED_DOMAINS") {
+        state.auth.set_sso_allowed(csv(raw));
+    }
+    if let Some(raw) = body.values.get("ADMIN_SSO_EMAILS") {
+        *state.sso_emails.write().unwrap() = csv(raw);
+    }
+
+    let pending: Vec<&str> = body
+        .values
+        .keys()
+        .filter_map(|k| settings::definition(k))
+        .filter(|d| d.apply == Apply::Restart)
+        .map(|d| d.key)
+        .collect();
+
+    Ok(Json(json!({ "ok": true, "restartRequired": pending })))
+}
+
+fn csv(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+async fn get_audit(State(state): State<AdminState>, headers: HeaderMap) -> ApiResult {
+    check_auth(&state, &headers)?;
+    let client = state.db.get().await.map_err(|_| db_error())?;
+    let rows = client
+        .query(
+            "SELECT actor, action, detail, created_at
+             FROM admin_audit ORDER BY created_at DESC LIMIT 200",
+            &[],
+        )
+        .await
+        .map_err(|_| db_error())?;
+
+    let entries: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "actor": row.get::<_, String>(0),
+                "action": row.get::<_, String>(1),
+                "detail": row.get::<_, Option<String>>(2),
+                "createdAt": ts(row, "created_at"),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "entries": entries })))
 }
