@@ -8,6 +8,7 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.vpn.client.MainActivity
@@ -49,13 +50,44 @@ class MyVpnService : VpnService() {
         private const val KEEPALIVE_INTERVAL_MS = 30000L
         private const val READ_BUFFER_SIZE = 32767
 
-        // Live service state so the UI can re-sync after the app process is
-        // force-quit and relaunched (the VpnService keeps running in background).
-        @Volatile var isConnected: Boolean = false
+        /**
+         * The live tunnel, published so the UI can re-sync after the app process
+         * is backgrounded, force-quit or relaunched — the VpnService keeps
+         * running either way. Null while disconnected.
+         */
+        @Volatile var liveState: LiveState? = null
             private set
-        @Volatile var assignedIp: String = ""
+
+        /**
+         * Traffic counters for the live tunnel, kept out of [liveState] so the
+         * once-a-second update is a plain volatile write rather than a
+         * read-modify-write that could republish a tunnel torn down in between.
+         * Reset when a tunnel comes up; only meaningful while [liveState] is
+         * non-null.
+         */
+        @Volatile var liveBytesReceived: Long = 0L
             private set
+        @Volatile var liveBytesSent: Long = 0L
+            private set
+
+        val isConnected: Boolean get() = liveState != null
     }
+
+    /**
+     * Immutable description of the tunnel currently up.
+     *
+     * [connectedSinceElapsedMs] is on the SystemClock.elapsedRealtime base so
+     * the session duration keeps counting from the real connect time (and is
+     * immune to wall-clock changes) rather than restarting at zero every time
+     * the user reopens the app.
+     */
+    data class LiveState(
+        val assignedIp: String,
+        val gateway: String,
+        val dns: String,
+        val mtu: Int,
+        val connectedSinceElapsedMs: Long
+    )
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var tlsConnection: TlsConnection? = null
@@ -163,8 +195,16 @@ class MyVpnService : VpnService() {
                 updateNotification("Connected to $serverAddress")
 
                 // Publish live state so the UI can re-sync after an app restart.
-                isConnected = true
-                assignedIp = config.assignedIP
+                val connectedSince = SystemClock.elapsedRealtime()
+                liveBytesReceived = 0
+                liveBytesSent = 0
+                liveState = LiveState(
+                    assignedIp = config.assignedIP,
+                    gateway = config.gateway,
+                    dns = config.dns.joinToString(", "),
+                    mtu = config.mtu,
+                    connectedSinceElapsedMs = connectedSince
+                )
 
                 // Notify UI of successful connection
                 val successIntent = Intent("com.vpn.client.VPN_CONNECTED").apply {
@@ -173,6 +213,7 @@ class MyVpnService : VpnService() {
                     putExtra("gateway", config.gateway)
                     putExtra("dns", config.dns.joinToString(", "))
                     putExtra("mtu", config.mtu)
+                    putExtra("connected_since_elapsed_ms", connectedSince)
                 }
                 sendBroadcast(successIntent)
                 Log.i(TAG, "Sent VPN_CONNECTED broadcast with IP: ${config.assignedIP}")
@@ -197,8 +238,7 @@ class MyVpnService : VpnService() {
             return
         }
 
-        isConnected = false
-        assignedIp = ""
+        liveState = null
 
         serviceScope.launch {
             try {
@@ -548,13 +588,32 @@ class MyVpnService : VpnService() {
 
     private suspend fun sendTrafficStats() = withContext(Dispatchers.IO) {
         try {
+            var lastReceived = -1L
+            var lastSent = -1L
+
             while (isRunning.get() && isActive) {
                 delay(1000) // Update every second
 
+                val received = bytesReceived.get()
+                val sent = bytesSent.get()
+
+                // Keep the published counters current for a UI that re-syncs
+                // after being backgrounded.
+                liveBytesReceived = received
+                liveBytesSent = sent
+
+                // Only broadcast when the counters actually moved. An idle
+                // tunnel used to wake every registered receiver once a second
+                // for a pair of unchanged numbers, which on a phone is a
+                // pointless drain on a screen-off device.
+                if (received == lastReceived && sent == lastSent) continue
+                lastReceived = received
+                lastSent = sent
+
                 val statsIntent = Intent("com.vpn.client.VPN_STATS").apply {
                     setPackage(packageName)
-                    putExtra("bytes_received", bytesReceived.get())
-                    putExtra("bytes_sent", bytesSent.get())
+                    putExtra("bytes_received", received)
+                    putExtra("bytes_sent", sent)
                 }
                 sendBroadcast(statsIntent)
             }

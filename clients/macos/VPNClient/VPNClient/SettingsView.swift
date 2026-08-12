@@ -2,9 +2,9 @@
 //  SettingsView.swift
 //  VPNClient
 //
-//  Settings screen for the macOS OpenTunnel client.
-//  Visual design matches the iOS SettingsView (Form sections:
-//  Server Configuration, Connection Options, Security, About, Reset).
+//  Settings screen, shared by the iOS, iPadOS and macOS clients (Form
+//  sections: Server Configuration, Connection Options, Security, About,
+//  Reset).
 //
 
 import SwiftUI
@@ -59,7 +59,7 @@ struct SettingsView: View {
                 Text("This will reset all settings to their default values. Your saved credentials will be removed.")
             }
         }
-        .frame(minWidth: 420, minHeight: 520)
+        .modifier(SettingsSheetSizing())
     }
 
     // MARK: - Server Section
@@ -72,6 +72,7 @@ struct SettingsView: View {
                     .multilineTextAlignment(.trailing)
                     .foregroundColor(.secondary)
                     .textFieldStyle(.plain)
+                    .textFieldKind(.host)
             }
 
             HStack {
@@ -81,6 +82,7 @@ struct SettingsView: View {
                     .multilineTextAlignment(.trailing)
                     .foregroundColor(.secondary)
                     .textFieldStyle(.plain)
+                    .textFieldKind(.port)
                     .frame(width: 80)
             }
         } header: {
@@ -144,7 +146,7 @@ struct SettingsView: View {
             HStack {
                 Text("Platform")
                 Spacer()
-                Text("macOS")
+                Text(RuntimePlatform.displayName)
                     .foregroundColor(.secondary)
             }
 
@@ -268,6 +270,20 @@ struct SettingsView: View {
         autoConnect = false
         connectOnWiFi = true
         killSwitch = false
+    }
+}
+
+/// The settings sheet needs a minimum size on macOS, where a sheet is sized by
+/// its content. On iOS the sheet is already the width of the device, and a
+/// 420 pt minimum is wider than an iPhone SE/13 mini (320–375 pt), which pushes
+/// the form off the right edge — so touch platforms take the sheet as-is.
+private struct SettingsSheetSizing: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content.frame(minWidth: 420, minHeight: 520)
+        #else
+        content
+        #endif
     }
 }
 

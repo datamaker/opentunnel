@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.vpn.client.auth.DeviceFlowClient
@@ -47,6 +48,12 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _password = MutableStateFlow("")
     val password: StateFlow<String> = _password.asStateFlow()
+
+    // Who to show in the header. For password logins this is the username; SSO
+    // users have no username at all, so it is the email claim from the
+    // id_token (matching the Apple clients) rather than a blank line.
+    private val _displayName = MutableStateFlow("")
+    val displayName: StateFlow<String> = _displayName.asStateFlow()
 
     // Auth mode: "password" (username/password) or "sso" (Datasee SSO session token)
     private val _authMode = MutableStateFlow(AUTH_MODE_PASSWORD)
@@ -104,6 +111,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     private val _connectionDuration = MutableStateFlow("00:00:00")
     val connectionDuration: StateFlow<String> = _connectionDuration.asStateFlow()
 
+    // SystemClock.elapsedRealtime base — matches what MyVpnService publishes.
     private var connectionStartTime: Long = 0
     private var durationJob: Job? = null
 
@@ -129,6 +137,8 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 _username.value = prefs.getString("username", "") ?: ""
                 _password.value = prefs.getString("password", "") ?: ""
             }
+            // Sessions stored before display_name existed fall back to the username.
+            _displayName.value = prefs.getString("display_name", null) ?: _username.value
             _isLoggedIn.value = true
         }
     }
@@ -147,10 +157,12 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 if (result.success) {
                     _sessionToken.value = result.sessionToken
                     _authMode.value = AUTH_MODE_PASSWORD
+                    _displayName.value = username
                     _isLoggedIn.value = true
                     prefs.edit()
                         .putBoolean("logged_in", true)
                         .putString("auth_mode", AUTH_MODE_PASSWORD)
+                        .putString("display_name", username)
                         .putString("username", username)
                         .putString("password", password)
                         .putString("server_address", serverAddress)
@@ -199,14 +211,17 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
                 // connection; it hands back the long-lived session token.
                 val result = performSsoLogin(idToken, serverAddress, serverPort)
                 if (result.success && result.sessionToken.isNotEmpty()) {
+                    val ssoName = DeviceFlowClient.emailFromIdToken(idToken) ?: "Datasee SSO"
                     _sessionToken.value = result.sessionToken
                     _authMode.value = AUTH_MODE_SSO
                     _username.value = ""
                     _password.value = ""
+                    _displayName.value = ssoName
                     _isLoggedIn.value = true
                     prefs.edit()
                         .putBoolean("logged_in", true)
                         .putString("auth_mode", AUTH_MODE_SSO)
+                        .putString("display_name", ssoName)
                         .putString("session_token", result.sessionToken)
                         .putString("server_address", serverAddress)
                         .putInt("server_port", serverPort)
@@ -247,6 +262,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     fun onSessionAuthFailed() {
         _isLoggedIn.value = false
         _sessionToken.value = ""
+        _displayName.value = ""
         _connectionState.value = VpnConnectionState.DISCONNECTED
         prefs.edit().clear().apply()
         stopDurationTimer()
@@ -336,6 +352,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
             _sessionToken.value = ""
             _username.value = ""
             _password.value = ""
+            _displayName.value = ""
             _authMode.value = AUTH_MODE_PASSWORD
             _connectionState.value = VpnConnectionState.DISCONNECTED
             prefs.edit().clear().apply()
@@ -347,13 +364,30 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         _connectionState.value = VpnConnectionState.CONNECTING
     }
 
-    fun onVpnConnected(assignedIp: String, gateway: String = "", dns: String = "", mtu: Int = 0) {
+    /**
+     * @param connectedSinceElapsedMs when the tunnel came up, on the
+     *   SystemClock.elapsedRealtime base (0 = unknown, start counting now).
+     *   Passing the service's value keeps the session duration correct when the
+     *   UI re-syncs after being backgrounded or relaunched, instead of
+     *   restarting the clock at 00:00:00 on every return to the app.
+     */
+    fun onVpnConnected(
+        assignedIp: String,
+        gateway: String = "",
+        dns: String = "",
+        mtu: Int = 0,
+        connectedSinceElapsedMs: Long = 0L
+    ) {
         _connectionState.value = VpnConnectionState.CONNECTED
         _assignedIp.value = assignedIp
         _gateway.value = gateway
         _dnsServers.value = dns
         _mtu.value = mtu
-        connectionStartTime = System.currentTimeMillis()
+        connectionStartTime = if (connectedSinceElapsedMs > 0L) {
+            connectedSinceElapsedMs
+        } else {
+            SystemClock.elapsedRealtime()
+        }
         startDurationTimer()
     }
 
@@ -400,7 +434,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         durationJob?.cancel()
         durationJob = viewModelScope.launch {
             while (isActive) {
-                val elapsed = System.currentTimeMillis() - connectionStartTime
+                val elapsed = SystemClock.elapsedRealtime() - connectionStartTime
                 _connectionDuration.value = formatDuration(elapsed)
                 delay(1000)
             }

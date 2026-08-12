@@ -2,9 +2,9 @@
 //  MainView.swift
 //  VPNClient
 //
-//  Main VPN connection screen for the macOS OpenTunnel client.
-//  Visual design matches the iOS MainView (concentric status circles,
-//  connection details card, statistics card, gradient action button).
+//  Main VPN connection screen, shared by the iOS, iPadOS and macOS clients
+//  (concentric status circles, connection details card, statistics card,
+//  gradient action button).
 //
 
 import SwiftUI
@@ -79,8 +79,10 @@ struct MainView: View {
                 Image(systemName: "gearshape.fill")
                     .font(.title3)
                     .foregroundColor(.primary)
+                    .touchTarget()
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Settings")
 
             Button {
                 showingLogout = true
@@ -88,9 +90,10 @@ struct MainView: View {
                 Image(systemName: "rectangle.portrait.and.arrow.right")
                     .font(.title3)
                     .foregroundColor(.primary)
+                    .touchTarget()
             }
             .buttonStyle(.plain)
-            .padding(.leading, 8)
+            .accessibilityLabel("Logout")
         }
         .padding()
         .background(Color.cardBackground)

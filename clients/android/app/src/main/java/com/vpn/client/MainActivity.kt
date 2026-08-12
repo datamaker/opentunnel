@@ -1,10 +1,12 @@
 package com.vpn.client
 
+import android.Manifest
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +14,7 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -19,7 +22,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.ContextCompat
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -28,11 +31,16 @@ import com.vpn.client.ui.screens.LoginScreen
 import com.vpn.client.ui.screens.MainScreen
 import com.vpn.client.ui.screens.SettingsScreen
 import com.vpn.client.ui.theme.VpnClientTheme
+import com.vpn.client.viewmodel.VpnConnectionState
 import com.vpn.client.viewmodel.VpnViewModel
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var vpnViewModel: VpnViewModel
+    // Owned by the activity rather than created inside setContent: the VPN
+    // broadcasts below can land before the first composition runs (the service
+    // is already connecting when the activity is recreated), and a lateinit
+    // field assigned from the composition would still be unset at that point.
+    private val vpnViewModel: VpnViewModel by viewModels()
 
     private val vpnBroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -43,8 +51,9 @@ class MainActivity : ComponentActivity() {
                     val gateway = intent.getStringExtra("gateway") ?: ""
                     val dns = intent.getStringExtra("dns") ?: ""
                     val mtu = intent.getIntExtra("mtu", 0)
+                    val connectedSince = intent.getLongExtra("connected_since_elapsed_ms", 0L)
                     Log.d("MainActivity", "VPN Connected with IP: $assignedIp")
-                    vpnViewModel.onVpnConnected(assignedIp, gateway, dns, mtu)
+                    vpnViewModel.onVpnConnected(assignedIp, gateway, dns, mtu, connectedSince)
                 }
                 "com.vpn.client.VPN_ERROR" -> {
                     val errorMessage = intent.getStringExtra("error_message") ?: "Connection failed"
@@ -80,21 +89,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // Android 13+ requires runtime consent before any notification is shown.
+    // Without it the ongoing VPN notification is silently dropped, which on a
+    // phone means no status in the shade and no way to disconnect once the app
+    // is swiped away — the tunnel keeps running invisibly.
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* Declined is survivable: the tunnel still works, just silently. */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Register broadcast receiver for VPN events
-        val filter = IntentFilter().apply {
-            addAction("com.vpn.client.VPN_CONNECTED")
-            addAction("com.vpn.client.VPN_ERROR")
-            addAction("com.vpn.client.VPN_DISCONNECTED")
-            addAction("com.vpn.client.VPN_STATS")
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(vpnBroadcastReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(vpnBroadcastReceiver, filter)
-        }
+        requestNotificationPermissionIfNeeded()
 
         setContent {
             VpnClientTheme {
@@ -102,16 +108,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    val viewModel: VpnViewModel = viewModel()
-                    vpnViewModel = viewModel
-
-                    // The VpnService can still be connected after an app restart —
-                    // re-sync the UI to its live state instead of showing Disconnected.
-                    LaunchedEffect(Unit) {
-                        if (MyVpnService.isConnected) {
-                            viewModel.onVpnConnected(MyVpnService.assignedIp)
-                        }
-                    }
+                    val viewModel = vpnViewModel
 
                     val navController = rememberNavController()
                     val isLoggedIn by viewModel.isLoggedIn.collectAsState()
@@ -171,6 +168,69 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+
+        // Scoped to the visible lifetime: a backgrounded activity has no UI to
+        // update, so there is no reason to keep waking it for stats broadcasts.
+        val filter = IntentFilter().apply {
+            addAction("com.vpn.client.VPN_CONNECTED")
+            addAction("com.vpn.client.VPN_ERROR")
+            addAction("com.vpn.client.VPN_DISCONNECTED")
+            addAction("com.vpn.client.VPN_STATS")
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(vpnBroadcastReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(vpnBroadcastReceiver, filter)
+        }
+
+        // The VpnService keeps running while the app is away, so whatever
+        // happened in the meantime is picked up here rather than leaving the UI
+        // showing stale state (or Disconnected over a live tunnel).
+        syncWithService()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        try {
+            unregisterReceiver(vpnBroadcastReceiver)
+        } catch (e: IllegalArgumentException) {
+            // Already unregistered.
+        }
+    }
+
+    /** Re-applies the service's live state to the UI. */
+    private fun syncWithService() {
+        val live = MyVpnService.liveState
+        if (live != null) {
+            vpnViewModel.onVpnConnected(
+                assignedIp = live.assignedIp,
+                gateway = live.gateway,
+                dns = live.dns,
+                mtu = live.mtu,
+                connectedSinceElapsedMs = live.connectedSinceElapsedMs
+            )
+            vpnViewModel.updateTrafficStats(
+                MyVpnService.liveBytesReceived,
+                MyVpnService.liveBytesSent
+            )
+        } else if (vpnViewModel.connectionState.value == VpnConnectionState.CONNECTED) {
+            // Tunnel went down while we were in the background.
+            vpnViewModel.onVpnDisconnected()
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
     private fun requestVpnPermissionAndConnect() {
         val intent = VpnService.prepare(this)
         if (intent != null) {
@@ -207,12 +267,4 @@ class MainActivity : ComponentActivity() {
         vpnViewModel.onVpnDisconnected()
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        try {
-            unregisterReceiver(vpnBroadcastReceiver)
-        } catch (e: Exception) {
-            // Receiver might not be registered
-        }
-    }
 }
