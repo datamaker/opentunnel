@@ -20,7 +20,8 @@ pub struct AuthService {
     /// Lifetime of session tokens minted for SSO logins, in days.
     sso_session_ttl_days: i64,
     /// Emails/domains allowed to authenticate via SSO. Empty = allow all.
-    sso_allowed: Vec<String>,
+    /// Behind a lock because the panel can change it while clients connect.
+    sso_allowed: std::sync::RwLock<Vec<String>>,
 }
 
 /// Check an email against an allowlist of emails and domains. Entries may be a
@@ -79,8 +80,14 @@ impl AuthService {
             db,
             jwt_secret,
             sso_session_ttl_days,
-            sso_allowed,
+            sso_allowed: std::sync::RwLock::new(sso_allowed),
         }
+    }
+
+    /// Replace the SSO allowlist at runtime (panel edit). Applies to the next
+    /// authentication attempt; sessions already issued are unaffected.
+    pub fn set_sso_allowed(&self, allowed: Vec<String>) {
+        *self.sso_allowed.write().unwrap() = allowed;
     }
 
     /// Verify credentials, enforce the account/connection limits and, on
@@ -158,7 +165,8 @@ impl AuthService {
     ) -> AuthResult {
         // Gate JIT provisioning (and login) on the allowlist: without this,
         // any account the IdP verifies gets a VPN account auto-created.
-        if !email_allowed(email, &self.sso_allowed) {
+        let allowed = self.sso_allowed.read().unwrap().clone();
+        if !email_allowed(email, &allowed) {
             self.log_event(
                 None,
                 "auth_fail",

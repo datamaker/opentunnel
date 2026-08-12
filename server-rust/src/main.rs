@@ -13,6 +13,7 @@ mod logging;
 mod protocol;
 mod router;
 mod session;
+mod settings;
 mod split;
 mod sso;
 mod state;
@@ -80,6 +81,22 @@ async fn main() -> anyhow::Result<()> {
         if stale > 0 {
             tracing::info!("Cleared {stale} stale session(s) from previous run");
         }
+    }
+
+    // Settings the operator edits from the panel. These override the
+    // environment per key, so anything never edited keeps its env value.
+    // Loaded before the services below are built, since they capture config.
+    let settings = Arc::new(settings::Store::new(db.clone()));
+    settings
+        .ensure_schema()
+        .await
+        .context("failed to create settings tables")?;
+    let overrides = settings.load().await;
+    if !overrides.is_empty() {
+        let mut keys: Vec<&str> = overrides.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        tracing::info!("Settings loaded from database: {}", keys.join(", "));
+        config.apply_overrides(&overrides);
     }
 
     // Core services.
@@ -173,6 +190,8 @@ async fn main() -> anyhow::Result<()> {
         let admin_db = db.clone();
         let admin_split = split.clone();
         let admin_client_id = config.sso.admin_client_id.clone();
+        let admin_settings = settings.clone();
+        let admin_auth = auth.clone();
         let production = config.production;
         tokio::spawn(async move {
             if let Err(e) = admin::serve(
@@ -182,6 +201,8 @@ async fn main() -> anyhow::Result<()> {
                 admin_sso,
                 admin_client_id,
                 production,
+                admin_settings,
+                admin_auth,
             )
             .await
             {

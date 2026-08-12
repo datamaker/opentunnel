@@ -99,6 +99,14 @@
                 class="px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
           스플릿 터널
         </button>
+        <button onclick="showTab('settings')" id="tabSettings"
+                class="px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+          설정
+        </button>
+        <button onclick="showTab('audit')" id="tabAudit"
+                class="px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+          변경 이력
+        </button>
       </div>
 
       <!-- Users Tab -->
@@ -205,10 +213,46 @@
                  class="w-full px-3 py-2 border rounded-lg bg-gray-50 font-mono text-sm text-gray-600 max-h-48 overflow-y-auto whitespace-pre"></div>
           </div>
           <p class="text-gray-400 text-xs">
-            저장하면 즉시 재해석되며, 이후에 연결하는 클라이언트부터 적용됩니다 (기존 연결은 재연결 필요).
-            서버 재시작 시 환경변수(SPLIT_*) 값으로 되돌아가므로 영구 반영은 .env에도 적용하세요.
+            저장하면 즉시 재해석되어 데이터베이스에 기록되며, 재시작해도 유지됩니다.
+            이후에 연결하는 클라이언트부터 적용되므로 기존 연결은 재연결이 필요합니다.
           </p>
           <p id="splitStatus" class="text-sm hidden"></p>
+        </div>
+      </div>
+
+      <!-- Settings Tab -->
+      <div id="panelSettings" class="hidden">
+        <div class="bg-white rounded-lg shadow p-6 space-y-6">
+          <div>
+            <h2 class="text-lg font-semibold">서버 설정</h2>
+            <p class="text-gray-500 text-sm mt-1">
+              여기서 바꾼 값은 데이터베이스에 저장되어 재시작해도 유지됩니다.
+              접속 정보와 인증 비밀키는 안전을 위해 환경변수로만 관리합니다.
+            </p>
+          </div>
+          <div id="settingsGroups" class="space-y-6"></div>
+          <div class="flex items-center gap-3 pt-2 border-t">
+            <button onclick="saveSettings()"
+                    class="bg-primary text-white px-4 py-2 rounded-lg hover:opacity-90">저장</button>
+            <p id="settingsStatus" class="text-sm hidden"></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Audit Tab -->
+      <div id="panelAudit" class="hidden">
+        <div class="bg-white rounded-lg shadow p-6">
+          <h2 class="text-lg font-semibold mb-1">변경 이력</h2>
+          <p class="text-gray-500 text-sm mb-4">누가 무엇을 언제 바꿨는지 최근 200건입니다.</p>
+          <table class="w-full">
+            <thead>
+              <tr class="text-left text-sm text-gray-500 border-b">
+                <th class="pb-2">시각</th><th class="pb-2">사용자</th>
+                <th class="pb-2">동작</th><th class="pb-2">내용</th>
+              </tr>
+            </thead>
+            <tbody id="auditTable"></tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -444,7 +488,7 @@
 
     // Tabs
     function showTab(tab) {
-      const tabs = ['users', 'sessions', 'logs', 'split'];
+      const tabs = ['users', 'sessions', 'logs', 'split', 'settings', 'audit'];
       tabs.forEach(t => {
         document.getElementById(`panel${t.charAt(0).toUpperCase() + t.slice(1)}`).classList.toggle('hidden', t !== tab);
         document.getElementById(`tab${t.charAt(0).toUpperCase() + t.slice(1)}`).classList.toggle('border-primary', t === tab);
@@ -457,12 +501,139 @@
       if (tab === 'sessions') loadSessions();
       if (tab === 'logs') loadLogs();
       if (tab === 'split') loadSplit();
+      if (tab === 'settings') loadSettings();
+      if (tab === 'audit') loadAudit();
     }
 
     // Split tunnel policy
     function parseLines(id) {
       return document.getElementById(id).value
         .split(/[\n,]/).map(s => s.trim()).filter(s => s.length > 0);
+    }
+
+    // ---- Settings -------------------------------------------------------
+
+    let settingsDefs = [];
+
+    function escapeHtml(v) {
+      return String(v).replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    async function loadSettings() {
+      const el = document.getElementById('settingsGroups');
+      try {
+        const res = await api('/api/settings');
+        settingsDefs = res.settings || [];
+      } catch (err) {
+        el.innerHTML = '<p class="text-red-500 text-sm">설정을 불러오지 못했습니다.</p>';
+        return;
+      }
+
+      const groups = [];
+      settingsDefs.forEach(d => {
+        let g = groups.find(x => x.name === d.group);
+        if (!g) { g = { name: d.group, items: [] }; groups.push(g); }
+        g.items.push(d);
+      });
+
+      el.innerHTML = groups.map(g => `
+        <div class="space-y-3">
+          <h3 class="font-medium text-gray-700 border-b pb-1">${escapeHtml(g.name)}</h3>
+          ${g.items.map(d => renderSetting(d)).join('')}
+        </div>`).join('');
+    }
+
+    function renderSetting(d) {
+      const id = 'set_' + d.key;
+      // Say where the value came from: an operator should be able to tell a
+      // deployment default from something someone changed.
+      const source = d.source === 'db'
+        ? '<span class="text-xs text-primary">저장됨</span>'
+        : '<span class="text-xs text-gray-400">환경변수 기본값</span>';
+      const restart = d.apply === 'restart'
+        ? '<span class="text-xs text-amber-600">재시작 후 적용</span>' : '';
+
+      let field;
+      if (d.kind === 'bool') {
+        field = `<input type="checkbox" id="${id}" ${d.value === 'true' ? 'checked' : ''} class="mr-2">`;
+      } else if (d.kind === 'csv') {
+        field = `<textarea id="${id}" rows="3"
+                   class="w-full px-3 py-2 border rounded-lg font-mono text-sm"
+                   >${escapeHtml((d.value || '').split(',').filter(Boolean).join('\n'))}</textarea>`;
+      } else {
+        field = `<input type="number" id="${id}" value="${escapeHtml(d.value)}"
+                   class="w-40 px-3 py-2 border rounded-lg font-mono text-sm">`;
+      }
+
+      return `
+        <div class="space-y-1">
+          <div class="flex items-center gap-2 flex-wrap">
+            <label for="${id}" class="text-sm font-medium">${escapeHtml(d.label)}</label>
+            <code class="text-xs text-gray-400">${escapeHtml(d.key)}</code>
+            ${source} ${restart}
+          </div>
+          ${field}
+          <p class="text-xs text-gray-400">${escapeHtml(d.help)}</p>
+        </div>`;
+    }
+
+    function readSetting(d) {
+      const el = document.getElementById('set_' + d.key);
+      if (!el) return null;
+      if (d.kind === 'bool') return el.checked ? 'true' : 'false';
+      if (d.kind === 'csv') {
+        return el.value.split(/[\n,]/).map(s => s.trim()).filter(Boolean).join(',');
+      }
+      return el.value.trim();
+    }
+
+    async function saveSettings() {
+      const statusEl = document.getElementById('settingsStatus');
+      const values = {};
+      settingsDefs.forEach(d => {
+        const v = readSetting(d);
+        if (v !== null) values[d.key] = v;
+      });
+
+      try {
+        const res = await api('/api/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ values })
+        });
+        const pending = res.restartRequired || [];
+        statusEl.textContent = pending.length
+          ? `저장했습니다. 재시작 후 적용되는 항목: ${pending.join(', ')}`
+          : '저장했습니다. 바로 적용됩니다.';
+        statusEl.className = 'text-sm text-green-600';
+        statusEl.classList.remove('hidden');
+        loadSettings();
+      } catch (err) {
+        statusEl.textContent = (err && err.message) ? err.message : '저장하지 못했습니다.';
+        statusEl.className = 'text-sm text-red-500';
+        statusEl.classList.remove('hidden');
+      }
+    }
+
+    // ---- Audit ----------------------------------------------------------
+
+    async function loadAudit() {
+      const body = document.getElementById('auditTable');
+      try {
+        const res = await api('/api/audit');
+        const rows = res.entries || [];
+        body.innerHTML = rows.length ? rows.map(e => `
+          <tr class="border-b text-sm">
+            <td class="py-2 whitespace-nowrap">${e.createdAt ? new Date(e.createdAt).toLocaleString('ko-KR') : '-'}</td>
+            <td class="py-2">${escapeHtml(e.actor)}</td>
+            <td class="py-2 font-mono text-xs">${escapeHtml(e.action)}</td>
+            <td class="py-2 text-gray-600 break-all">${escapeHtml(e.detail || '')}</td>
+          </tr>`).join('')
+          : '<tr><td colspan="4" class="py-4 text-gray-400 text-sm">아직 기록이 없습니다.</td></tr>';
+      } catch (err) {
+        body.innerHTML = '<tr><td colspan="4" class="py-4 text-red-500 text-sm">불러오지 못했습니다.</td></tr>';
+      }
     }
 
     async function loadSplit() {
