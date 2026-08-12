@@ -353,6 +353,25 @@
       try {
         const cfg = await fetch('/api/auth/config').then(r => r.json());
 
+        // Behind gatehouse the visitor is already signed in, so claim a session
+        // straight away instead of showing a second prompt. Only reachable
+        // through the proxy; a direct hit on the admin port just 403s and falls
+        // through to the password form below.
+        if (cfg.forwardAuth) {
+          try {
+            const res = await fetch('/api/login/forward-auth', { method: 'POST' });
+            if (res.ok) {
+              const data = await res.json();
+              if (data.token) {
+                acceptToken(data.token);
+                return;
+              }
+            }
+          } catch (err) {
+            // Fall through to the regular login options.
+          }
+        }
+
         if (!cfg.passwordLogin) {
           document.getElementById('loginForm').classList.add('hidden');
           document.getElementById('passwordDisabledNotice').classList.remove('hidden');
