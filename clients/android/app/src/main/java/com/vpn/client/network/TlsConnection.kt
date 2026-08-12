@@ -229,15 +229,19 @@ class TlsConnection {
      * Note: For development, trusts all certificates. Use proper CA validation in production.
      */
     private fun createSslContext(): SSLContext {
-        // Trust all certificates for development (NOT for production!)
-        val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {}
-            override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {}
-            override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
-        })
-
+        // Standard validation against the system trust store. A null TrustManager
+        // array makes SSLContext use the platform default, which verifies the
+        // server's certificate chain. Hostname verification is enabled separately
+        // in configureSslSocket (a bare SSLSocket does not check the hostname on
+        // its own). An accept-all TrustManager — as this once had — turns TLS
+        // into encryption without authentication, letting an active MITM
+        // impersonate the VPN server.
+        //
+        // The server must present a certificate valid for the address the user
+        // connects to (e.g. Let's Encrypt on a DNS name); a self-signed dev
+        // server must be trusted by the device.
         val sslContext = SSLContext.getInstance("TLSv1.3")
-        sslContext.init(null, trustAllCerts, SecureRandom())
+        sslContext.init(null, null, SecureRandom())
 
         return sslContext
     }
@@ -248,6 +252,15 @@ class TlsConnection {
     private fun configureSslSocket(sslSocket: SSLSocket) {
         // Enable only TLS 1.3
         sslSocket.enabledProtocols = arrayOf("TLSv1.3")
+
+        // Verify the certificate actually belongs to the host we dialed. A
+        // TrustManager only checks the chain is valid, not that it was issued
+        // for this hostname; "HTTPS" endpoint identification adds that check
+        // (and sends SNI) during the handshake. Without it a valid certificate
+        // for any host would be accepted for this connection.
+        sslSocket.sslParameters = sslSocket.sslParameters.apply {
+            endpointIdentificationAlgorithm = "HTTPS"
+        }
 
         // Set preferred cipher suites for TLS 1.3
         val supportedCiphers = sslSocket.supportedCipherSuites

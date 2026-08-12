@@ -167,10 +167,16 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private func connectToServer(host: String, port: UInt16) {
         let tlsOptions = NWProtocolTLS.Options()
 
-        // Accept self-signed certificates (development)
-        sec_protocol_options_set_verify_block(tlsOptions.securityProtocolOptions, { _, _, complete in
-            complete(true)
-        }, .main)
+        // Standard TLS validation: the framework verifies the server certificate
+        // against the system trust store and checks it matches `host`. No custom
+        // verify block — an accept-all block (as this once had) turns TLS into
+        // encryption without authentication, which for a VPN means an active
+        // MITM can impersonate the server and read every credential and packet.
+        //
+        // The server must therefore present a certificate valid for the address
+        // the user connects to (e.g. Let's Encrypt on a DNS name). A self-signed
+        // dev server must have its certificate trusted by the OS.
+        sec_protocol_options_set_tls_server_name(tlsOptions.securityProtocolOptions, host)
 
         let params = NWParameters(tls: tlsOptions, tcp: NWProtocolTCP.Options())
         connection = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: params)

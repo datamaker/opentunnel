@@ -28,7 +28,11 @@ fi
 
 # Generate certificates if they don't exist
 if [ ! -f /app/certs/server.crt ]; then
-    echo "Generating self-signed certificates..."
+    echo "WARNING: no certificate mounted — generating a self-signed one (DEV ONLY)."
+    echo "         Clients validate the certificate the standard way and will REFUSE"
+    echo "         this unless it is trusted on the device. For production, mount a"
+    echo "         real certificate for your VPN's DNS name (e.g. Let's Encrypt) at"
+    echo "         TLS_CERT_PATH / TLS_KEY_PATH."
     mkdir -p /app/certs
     openssl req -x509 -newkey rsa:4096 -keyout /app/certs/server.key -out /app/certs/server.crt \
         -days 365 -nodes -subj "/CN=opentunnel-vpn"
