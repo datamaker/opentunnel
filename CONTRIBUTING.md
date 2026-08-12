@@ -29,18 +29,27 @@ Please be respectful and constructive in all interactions. We welcome contributo
 2. Create a feature branch: `git checkout -b feature/my-feature`
 3. Make your changes
 4. Write/update tests if applicable
-5. Run linting: `npm run lint`
+5. Format and lint: `cargo fmt` and `cargo clippy` (server)
 6. Commit with clear message
 7. Push and create a Pull Request
 
 ## Development Setup
 
-### Server
+### Server (Rust)
+
+The server lives in `server-rust/` (a Rust/Tokio rewrite of the original
+Node.js server).
 
 ```bash
-cd server
-npm install
-npm run dev
+cd server-rust
+cp .env.example .env    # then edit as needed
+cargo run
+```
+
+Or run the whole stack (server + PostgreSQL) with Docker:
+
+```bash
+docker compose up -d --build
 ```
 
 ### macOS Client
@@ -62,12 +71,11 @@ npm run dev
 
 ## Code Style
 
-### TypeScript (Server)
+### Rust (Server)
 
-- Use ESLint configuration
-- Prefer `const` over `let`
-- Use async/await over callbacks
-- Add JSDoc comments for public APIs
+- Format with `cargo fmt`; keep `cargo clippy` clean
+- Prefer returning `Result` over panicking on recoverable errors
+- Add `///` doc comments for public items
 
 ### Swift (iOS/macOS)
 
@@ -111,8 +119,8 @@ docs(readme): update installation instructions
 ### Server
 
 ```bash
-cd server
-npm test
+cd server-rust
+cargo test
 ```
 
 ### Clients
@@ -121,7 +129,9 @@ Test on actual devices when possible, especially for VPN functionality.
 
 ## Security
 
-If you discover a security vulnerability, please email security@example.com instead of creating a public issue.
+If you discover a security vulnerability, please report it privately instead of
+opening a public issue — use GitHub's [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)
+(Security → Report a vulnerability) on this repository.
 
 ## License
 
