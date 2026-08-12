@@ -164,3 +164,18 @@ Initial port. Control plane (TLS, auth, config push, keepalive, session
 lifecycle, DB persistence), the admin API, and bidirectional packet routing are
 implemented and covered by an end-to-end test against a live PostgreSQL. The
 Linux data plane uses a native, pure-Rust TUN device (no Python).
+
+## Admin panel security
+
+- `ADMIN_PASSWORD` is **required in production** — password login is refused
+  while the compiled-in default is in effect.
+- Admin SSO login: set `ADMIN_SSO_EMAILS` (comma-separated emails or
+  `@domains`) plus `OIDC_ISSUER`. The panel then shows a "Sign in with Google"
+  button. If the device-flow client id is not a Web-type OAuth client, create
+  one and set it as `OIDC_ADMIN_CLIENT_ID` (authorized JavaScript origin =
+  the panel URL).
+- VPN SSO logins are restricted with `SSO_ALLOWED_DOMAINS`
+  (e.g. `datasee.co.kr`). While unset, any account the IdP verifies is
+  accepted and auto-provisioned — the server logs a warning.
+- Login endpoints lock an IP out for 60s after 5 consecutive failures.
+- API tokens are accepted from the `Authorization: Bearer` header only.

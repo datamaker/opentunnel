@@ -41,6 +41,10 @@ pub struct VpnConfig {
 pub struct AdminConfig {
     pub port: u16,
     pub password: String,
+    /// Emails (or `@domain` / bare-domain entries) allowed to log into the
+    /// admin panel via SSO (`ADMIN_SSO_EMAILS`). Empty = admin SSO disabled —
+    /// panel admin rights are too sensitive for an implicit allow-all.
+    pub sso_emails: Vec<String>,
 }
 
 /// Split-tunnel (destination-based routing) policy.
@@ -72,9 +76,18 @@ pub struct SsoConfig {
     pub issuer: String,
     /// Expected `aud` claim of the id_token (`OIDC_CLIENT_ID`).
     pub client_id: String,
+    /// Expected `aud` for admin-panel SSO logins (`OIDC_ADMIN_CLIENT_ID`).
+    /// Google Identity Services on the web needs a Web-type OAuth client,
+    /// which may differ from the device-flow client. Defaults to `client_id`.
+    pub admin_client_id: String,
     /// Lifetime of session JWTs minted for SSO logins, in days
     /// (`SSO_SESSION_TTL_DAYS`).
     pub session_ttl_days: i64,
+    /// Emails or domains allowed to authenticate via SSO
+    /// (`SSO_ALLOWED_DOMAINS`, e.g. `datasee.co.kr,contractor@gmail.com`).
+    /// Empty = any verified account accepted (a startup warning is logged) —
+    /// kept for backwards compatibility with existing deployments.
+    pub allowed_domains: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -157,6 +170,7 @@ impl Config {
             admin: AdminConfig {
                 port: env_parse("ADMIN_PORT", 8080),
                 password: env_or("ADMIN_PASSWORD", "admin123"),
+                sso_emails: env_csv("ADMIN_SSO_EMAILS"),
             },
             split: SplitConfig {
                 enabled: env_bool("SPLIT_TUNNEL", false),
@@ -164,13 +178,18 @@ impl Config {
                 domains: env_csv("SPLIT_INCLUDE_DOMAINS"),
                 refresh_secs: env_parse("SPLIT_DNS_REFRESH_SECS", 300),
             },
-            sso: SsoConfig {
-                issuer: env_or("OIDC_ISSUER", "")
-                    .trim()
-                    .trim_end_matches('/')
-                    .to_string(),
-                client_id: env_or("OIDC_CLIENT_ID", "opentunnel"),
-                session_ttl_days: env_parse("SSO_SESSION_TTL_DAYS", 30),
+            sso: {
+                let client_id = env_or("OIDC_CLIENT_ID", "opentunnel");
+                SsoConfig {
+                    issuer: env_or("OIDC_ISSUER", "")
+                        .trim()
+                        .trim_end_matches('/')
+                        .to_string(),
+                    admin_client_id: env_or("OIDC_ADMIN_CLIENT_ID", &client_id),
+                    client_id,
+                    session_ttl_days: env_parse("SSO_SESSION_TTL_DAYS", 30),
+                    allowed_domains: env_csv("SSO_ALLOWED_DOMAINS"),
+                }
             },
             jwt_secret: env_or("JWT_SECRET", "change-this-in-production"),
             production: env_or("NODE_ENV", "development") == "production",

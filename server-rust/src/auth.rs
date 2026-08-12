@@ -19,6 +19,32 @@ pub struct AuthService {
     jwt_secret: String,
     /// Lifetime of session tokens minted for SSO logins, in days.
     sso_session_ttl_days: i64,
+    /// Emails/domains allowed to authenticate via SSO. Empty = allow all.
+    sso_allowed: Vec<String>,
+}
+
+/// Check an email against an allowlist of emails and domains. Entries may be a
+/// full email (`user@example.com`), a domain (`example.com`) or an
+/// at-prefixed domain (`@example.com`). An empty list allows everything.
+pub fn email_allowed(email: &str, allowed: &[String]) -> bool {
+    if allowed.is_empty() {
+        return true;
+    }
+    let email = email.trim().to_lowercase();
+    if !email.contains('@') {
+        return false; // not a plausible email — never allowlist-match it
+    }
+    let domain = email.rsplit('@').next().unwrap_or("");
+    allowed.iter().any(|entry| {
+        let entry = entry.trim().trim_start_matches('@').to_lowercase();
+        if entry.is_empty() {
+            false
+        } else if entry.contains('@') {
+            email == entry
+        } else {
+            domain == entry
+        }
+    })
 }
 
 #[derive(Debug)]
@@ -43,11 +69,17 @@ struct Claims {
 }
 
 impl AuthService {
-    pub fn new(db: DbPool, jwt_secret: String, sso_session_ttl_days: i64) -> Self {
+    pub fn new(
+        db: DbPool,
+        jwt_secret: String,
+        sso_session_ttl_days: i64,
+        sso_allowed: Vec<String>,
+    ) -> Self {
         AuthService {
             db,
             jwt_secret,
             sso_session_ttl_days,
+            sso_allowed,
         }
     }
 
@@ -124,6 +156,20 @@ impl AuthService {
         platform: ClientPlatform,
         client_ip: IpAddr,
     ) -> AuthResult {
+        // Gate JIT provisioning (and login) on the allowlist: without this,
+        // any account the IdP verifies gets a VPN account auto-created.
+        if !email_allowed(email, &self.sso_allowed) {
+            self.log_event(
+                None,
+                "auth_fail",
+                platform,
+                client_ip,
+                Some(&format!("SSO email not in allowlist: {email}")),
+            )
+            .await;
+            return Err("This account is not allowed on this VPN".to_string());
+        }
+
         let client = self
             .db
             .get()
@@ -500,5 +546,53 @@ impl AuthService {
                 )
                 .await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::email_allowed;
+
+    fn list(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn empty_allowlist_allows_everything() {
+        assert!(email_allowed("anyone@anywhere.com", &[]));
+    }
+
+    #[test]
+    fn domain_entry_matches_domain_only() {
+        let allowed = list(&["datasee.co.kr"]);
+        assert!(email_allowed("kim@datasee.co.kr", &allowed));
+        assert!(email_allowed("KIM@DATASEE.CO.KR", &allowed));
+        assert!(!email_allowed("kim@gmail.com", &allowed));
+        // Domain must match exactly, not as a suffix.
+        assert!(!email_allowed("kim@evil-datasee.co.kr", &allowed));
+    }
+
+    #[test]
+    fn at_prefixed_domain_entry_matches() {
+        let allowed = list(&["@datasee.co.kr"]);
+        assert!(email_allowed("lee@datasee.co.kr", &allowed));
+        assert!(!email_allowed("lee@other.com", &allowed));
+    }
+
+    #[test]
+    fn full_email_entry_matches_exactly() {
+        let allowed = list(&["contractor@gmail.com", "datasee.co.kr"]);
+        assert!(email_allowed("contractor@gmail.com", &allowed));
+        assert!(!email_allowed("other@gmail.com", &allowed));
+        assert!(email_allowed("kim@datasee.co.kr", &allowed));
+    }
+
+    #[test]
+    fn tricky_emails_do_not_bypass() {
+        let allowed = list(&["datasee.co.kr"]);
+        // rsplit('@') takes the text after the LAST @, so a crafted local part
+        // cannot smuggle an allowed domain.
+        assert!(!email_allowed("kim@datasee.co.kr@evil.com", &allowed));
+        assert!(!email_allowed("datasee.co.kr", &allowed)); // no @ at all
     }
 }

@@ -39,12 +39,28 @@ async fn main() -> anyhow::Result<()> {
         .install_default()
         .ok();
 
-    let config = Config::from_env();
+    let mut config = Config::from_env();
     tracing::info!("Starting OpenTunnel VPN Server (Rust)");
     tracing::info!(
         "Environment: {}",
         if config.production { "production" } else { "development" }
     );
+
+    // A predictable JWT secret lets anyone mint valid session tokens and
+    // authenticate as any user. In production, replace the compiled-in default
+    // with a random per-process secret: existing session tokens stop working
+    // across restarts, but forgery becomes impossible.
+    if config.production && config.jwt_secret == "change-this-in-production" {
+        config.jwt_secret = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        tracing::warn!(
+            "JWT_SECRET is unset/default in production — using a random per-process secret. \
+             Session tokens will not survive restarts; set JWT_SECRET to fix this."
+        );
+    }
 
     // Database.
     let db = db::create_pool(&config.database)
@@ -72,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
         db.clone(),
         config.jwt_secret.clone(),
         config.sso.session_ttl_days,
+        config.sso.allowed_domains.clone(),
     ));
     let sessions = Arc::new(SessionManager::new());
 
@@ -85,10 +102,28 @@ async fn main() -> anyhow::Result<()> {
             config.sso.issuer,
             config.sso.client_id
         );
+        if config.sso.allowed_domains.is_empty() {
+            tracing::warn!(
+                "SSO_ALLOWED_DOMAINS is not set: ANY account verified by the IdP can log in \
+                 and will be auto-provisioned. Set it (e.g. SSO_ALLOWED_DOMAINS=datasee.co.kr) \
+                 to restrict VPN access."
+            );
+        }
         Some(Arc::new(sso::SsoVerifier::new(
             config.sso.issuer.clone(),
             config.sso.client_id.clone(),
         )))
+    };
+
+    // Admin-panel SSO uses its own audience (Google web client) when configured;
+    // it shares the VPN verifier when the client ids match.
+    let admin_sso: Option<Arc<sso::SsoVerifier>> = match &sso {
+        None => None,
+        Some(v) if config.sso.admin_client_id == config.sso.client_id => Some(v.clone()),
+        Some(_) => Some(Arc::new(sso::SsoVerifier::new(
+            config.sso.issuer.clone(),
+            config.sso.admin_client_id.clone(),
+        ))),
     };
 
     // Split-tunnel policy: resolve domains once up front, then refresh on a timer.
@@ -137,8 +172,19 @@ async fn main() -> anyhow::Result<()> {
         let admin_cfg = config.admin.clone();
         let admin_db = db.clone();
         let admin_split = split.clone();
+        let admin_client_id = config.sso.admin_client_id.clone();
+        let production = config.production;
         tokio::spawn(async move {
-            if let Err(e) = admin::serve(admin_cfg, admin_db, admin_split).await {
+            if let Err(e) = admin::serve(
+                admin_cfg,
+                admin_db,
+                admin_split,
+                admin_sso,
+                admin_client_id,
+                production,
+            )
+            .await
+            {
                 tracing::error!("Admin server error: {e}");
             }
         });
