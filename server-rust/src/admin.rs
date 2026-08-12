@@ -53,9 +53,18 @@ struct AdminState {
     sso_client_id: String,
     /// Allowlist for admin SSO logins. Empty = admin SSO disabled.
     sso_emails: Vec<String>,
+    /// Parsed `ADMIN_TRUSTED_PROXIES`. Empty = forward-auth login disabled.
+    trusted_proxies: Vec<IpNet>,
     tokens: Arc<Mutex<HashMap<String, i64>>>,
     attempts: Arc<Mutex<HashMap<IpAddr, LoginAttempts>>>,
     split: Arc<SplitPolicy>,
+}
+
+impl AdminState {
+    /// Forward-auth needs a proxy to trust *and* an allowlist to check against.
+    fn forward_auth_enabled(&self) -> bool {
+        !self.trusted_proxies.is_empty() && !self.sso_emails.is_empty()
+    }
 }
 
 type ApiError = (StatusCode, Json<Value>);
@@ -100,6 +109,27 @@ pub async fn serve(
         (None, _) => None,
     };
 
+    // Forward-auth login needs both a proxy we trust and an allowlist to check
+    // the proxy's claim against; either alone is not enough to admit anyone.
+    let mut trusted_proxies = Vec::new();
+    for entry in &cfg.trusted_proxies {
+        match IpNet::parse(entry) {
+            Some(net) => trusted_proxies.push(net),
+            None => tracing::warn!("ADMIN_TRUSTED_PROXIES: ignoring unparseable entry {entry:?}"),
+        }
+    }
+    if !trusted_proxies.is_empty() && cfg.sso_emails.is_empty() {
+        tracing::warn!(
+            "ADMIN_TRUSTED_PROXIES is set but ADMIN_SSO_EMAILS is empty — \
+             forward-auth login stays disabled (nobody would be allowed in)."
+        );
+    } else if !trusted_proxies.is_empty() {
+        tracing::info!(
+            "Admin forward-auth login enabled for {} trusted proxy range(s)",
+            trusted_proxies.len()
+        );
+    }
+
     let state = AdminState {
         db,
         admin_password: cfg.password,
@@ -107,6 +137,7 @@ pub async fn serve(
         sso: admin_sso,
         sso_client_id,
         sso_emails: cfg.sso_emails,
+        trusted_proxies,
         tokens: Arc::new(Mutex::new(HashMap::new())),
         attempts: Arc::new(Mutex::new(HashMap::new())),
         split,
@@ -117,6 +148,7 @@ pub async fn serve(
         .route("/api/auth/config", get(auth_config))
         .route("/api/login", post(login))
         .route("/api/login/sso", post(login_sso))
+        .route("/api/login/forward-auth", post(login_forward_auth))
         .route("/api/logout", post(logout))
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/:id", put(update_user).delete(delete_user))
@@ -138,6 +170,54 @@ pub async fn serve(
     )
     .await?;
     Ok(())
+}
+
+/// An IPv4/IPv6 CIDR, for the trusted-proxy check.
+#[derive(Clone, Copy, Debug)]
+pub struct IpNet {
+    addr: IpAddr,
+    prefix: u8,
+}
+
+impl IpNet {
+    /// Parse `10.0.0.0/8`, or a bare address (treated as a single host).
+    pub fn parse(entry: &str) -> Option<IpNet> {
+        let entry = entry.trim();
+        let (addr, prefix) = match entry.split_once('/') {
+            Some((a, p)) => (a, Some(p.parse::<u8>().ok()?)),
+            None => (entry, None),
+        };
+        let addr: IpAddr = addr.parse().ok()?;
+        let full = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix = prefix.unwrap_or(full);
+        if prefix > full {
+            return None;
+        }
+        Some(IpNet { addr, prefix })
+    }
+
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        fn masked(bytes: &[u8], prefix: u8) -> Vec<u8> {
+            let mut out = bytes.to_vec();
+            for (i, b) in out.iter_mut().enumerate() {
+                let bit = (i as u32) * 8;
+                let keep = (prefix as u32).saturating_sub(bit).min(8);
+                *b &= if keep == 0 { 0 } else { !0u8 << (8 - keep) };
+            }
+            out
+        }
+        match (self.addr, ip) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => {
+                masked(&net.octets(), self.prefix) == masked(&ip.octets(), self.prefix)
+            }
+            (IpAddr::V6(net), IpAddr::V6(ip)) => {
+                masked(&net.octets(), self.prefix) == masked(&ip.octets(), self.prefix)
+            }
+            // Never match across families: a v4 proxy entry must not admit a
+            // v6 peer (or its v4-mapped form).
+            _ => false,
+        }
+    }
 }
 
 /// Constant-time string equality, so the admin password check does not leak
@@ -214,6 +294,56 @@ mod tests {
         assert!(!ct_eq("short", "short-but-longer"));
         assert!(!ct_eq("a", ""));
     }
+
+    use super::IpNet;
+    use std::net::IpAddr;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn cidr_matches_only_inside_the_prefix() {
+        let net = IpNet::parse("172.20.0.0/16").unwrap();
+        assert!(net.contains(ip("172.20.0.1")));
+        assert!(net.contains(ip("172.20.255.254")));
+        assert!(!net.contains(ip("172.21.0.1")));
+        // The VPN subnet must never be admitted by a docker-network entry.
+        assert!(!net.contains(ip("10.8.0.4")));
+    }
+
+    #[test]
+    fn bare_address_is_a_single_host() {
+        let net = IpNet::parse("11.0.1.21").unwrap();
+        assert!(net.contains(ip("11.0.1.21")));
+        assert!(!net.contains(ip("11.0.1.22")));
+    }
+
+    #[test]
+    fn prefix_zero_and_boundaries() {
+        assert!(IpNet::parse("0.0.0.0/0").unwrap().contains(ip("8.8.8.8")));
+        let net = IpNet::parse("192.168.1.128/25").unwrap();
+        assert!(net.contains(ip("192.168.1.200")));
+        assert!(!net.contains(ip("192.168.1.127")));
+    }
+
+    #[test]
+    fn families_never_cross() {
+        // A v4 trusted-proxy entry must not admit a v6 peer, including the
+        // v4-mapped form of an address that would otherwise match.
+        let v4 = IpNet::parse("172.20.0.0/16").unwrap();
+        assert!(!v4.contains(ip("::ffff:172.20.0.1")));
+        let v6 = IpNet::parse("fd00::/8").unwrap();
+        assert!(v6.contains(ip("fd00::1")));
+        assert!(!v6.contains(ip("172.20.0.1")));
+    }
+
+    #[test]
+    fn rejects_malformed_entries() {
+        assert!(IpNet::parse("not-an-ip").is_none());
+        assert!(IpNet::parse("10.0.0.0/33").is_none());
+        assert!(IpNet::parse("").is_none());
+    }
 }
 
 /// Validate the bearer token against the in-memory session store. Tokens are
@@ -276,7 +406,46 @@ async fn auth_config(State(state): State<AdminState>) -> ApiResult {
         "passwordLogin": state.password_login,
         "sso": state.sso.is_some(),
         "clientId": if state.sso.is_some() { json!(state.sso_client_id) } else { Value::Null },
+        "forwardAuth": state.forward_auth_enabled(),
     })))
+}
+
+/// Log in on the strength of the reverse proxy's authentication header.
+///
+/// The panel sits behind gatehouse forward-auth, which has already established
+/// who the user is; re-authenticating them here would just be a second password
+/// prompt. The header is only believed when the peer is a configured trusted
+/// proxy — reaching the admin port directly (it also listens on the VPN
+/// network) must not let a client assert its own identity.
+async fn login_forward_auth(
+    State(state): State<AdminState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> ApiResult {
+    if !state.forward_auth_enabled() {
+        return Err(err(StatusCode::FORBIDDEN, "Forward-auth login is not enabled"));
+    }
+    if !state.trusted_proxies.iter().any(|net| net.contains(peer.ip())) {
+        tracing::warn!("Forward-auth login attempt from untrusted peer {}", peer.ip());
+        return Err(err(StatusCode::FORBIDDEN, "Not a trusted proxy"));
+    }
+
+    let email = headers
+        .get("x-auth-email")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|e| !e.is_empty());
+    let Some(email) = email else {
+        return Err(err(StatusCode::UNAUTHORIZED, "No authenticated identity"));
+    };
+
+    if !email_allowed(email, &state.sso_emails) {
+        tracing::warn!("Forward-auth login rejected for {email} (not in ADMIN_SSO_EMAILS)");
+        return Err(err(StatusCode::FORBIDDEN, "This account is not an admin"));
+    }
+
+    tracing::info!("Admin forward-auth login: {email}");
+    Ok(Json(json!({ "token": issue_token(&state), "email": email })))
 }
 
 async fn login(

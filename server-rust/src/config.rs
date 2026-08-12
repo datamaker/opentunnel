@@ -45,6 +45,11 @@ pub struct AdminConfig {
     /// admin panel via SSO (`ADMIN_SSO_EMAILS`). Empty = admin SSO disabled —
     /// panel admin rights are too sensitive for an implicit allow-all.
     pub sso_emails: Vec<String>,
+    /// CIDRs of reverse proxies whose authentication headers may be believed
+    /// (`ADMIN_TRUSTED_PROXIES`). Empty = never believe them, which is the only
+    /// safe default: the header is trivially forged by anyone who can reach the
+    /// admin port directly.
+    pub trusted_proxies: Vec<String>,
 }
 
 /// Split-tunnel (destination-based routing) policy.
@@ -171,6 +176,7 @@ impl Config {
                 port: env_parse("ADMIN_PORT", 8080),
                 password: env_or("ADMIN_PASSWORD", "admin123"),
                 sso_emails: env_csv("ADMIN_SSO_EMAILS"),
+                trusted_proxies: env_csv("ADMIN_TRUSTED_PROXIES"),
             },
             split: SplitConfig {
                 enabled: env_bool("SPLIT_TUNNEL", false),
