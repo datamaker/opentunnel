@@ -109,37 +109,49 @@ openssl s_client -connect localhost:1194 -tls1_3
 
 ## Client Setup
 
-### macOS Client
+The server address and credentials are entered on the app's login screen at
+runtime — you do not edit them in source. Prebuilt Android (APK) and Windows
+installers are attached to each [GitHub release](../../releases); the sections
+below are for building from source.
 
-1. Open `clients/macos/VPNClient.xcodeproj` in Xcode
-2. Update server address in `ContentView.swift`:
-   ```swift
-   @State private var serverAddress = "your-server-ip"
+> SSO (Google device flow) currently has the OIDC issuer and Apple bundle
+> identifiers hardcoded to this project's values. To use SSO in your own
+> deployment you must change those in the client sources; password login works
+> without any edits.
+
+### macOS / iOS
+
+macOS and iOS share one Xcode project (an app target plus a Packet Tunnel
+extension); there is no separate `clients/ios/` directory.
+
+1. Open `clients/macos/VPNClient/VPNClient.xcodeproj` in Xcode.
+2. Select your development team for code signing (required for the Network
+   Extension entitlement).
+3. Build and run the `VPNClient` scheme (⌘R). For iOS, choose a physical
+   device — the Packet Tunnel APIs do not work in the Simulator.
+4. Enter the server address and credentials on the login screen and connect.
+   On iOS, approve the VPN profile when prompted.
+
+### Android
+
+1. Open `clients/android/` in Android Studio, or build from the command line:
+   ```bash
+   cd clients/android && ./gradlew assembleRelease
    ```
-3. Build and run (⌘+R)
-4. Enter credentials and click "Connect"
+2. Install the APK and grant the VPN permission when prompted.
+3. Enter the server address and credentials on the login screen and connect.
 
-### iOS Client
+### Windows
 
-1. Open `clients/ios/OpenTunnelVPN.xcodeproj` in Xcode
-2. Select your development team for code signing
-3. Update server address in the app
-4. Deploy to a real device (VPN apps require physical device)
-5. Go to Settings → General → VPN to enable the profile
-
-### Android Client
-
-1. Open `clients/android/` in Android Studio
-2. Update server address in `app/src/main/java/.../VpnConfig.kt`
-3. Build APK: Build → Build Bundle(s) / APK(s) → Build APK(s)
-4. Install and grant VPN permissions when prompted
-
-### Windows Client
-
-1. Open `clients/windows/OpenTunnelVPN.sln` in Visual Studio
-2. Build solution (Ctrl+Shift+B)
-3. Run as Administrator (required for TAP adapter)
-4. Enter server address and credentials
+1. Open `clients/windows/VPNClient.sln` in Visual Studio, or build from the
+   command line:
+   ```bash
+   cd clients/windows && dotnet publish VPNClient/VPNClient.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish
+   ```
+   The build expects `wintun.dll` next to the executable (see
+   `.github/workflows/build-clients.yml` for how CI fetches it).
+2. Run as Administrator (required to create the WinTun adapter).
+3. Enter the server address and credentials and connect.
 
 ## Server Configuration
 
