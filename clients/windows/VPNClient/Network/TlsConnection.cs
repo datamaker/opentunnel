@@ -263,31 +263,22 @@ public class TlsConnection : IDisposable
         X509Chain? chain,
         SslPolicyErrors sslPolicyErrors)
     {
-        // In production, implement proper certificate validation
-        // For development, we'll accept any certificate
-
+        // Standard validation: accept only a certificate that chains to a
+        // trusted root AND matches the host we dialed (TargetHost). Accepting a
+        // chain or name-mismatch error — as this once did — turns TLS into
+        // encryption without authentication, letting an active MITM impersonate
+        // the VPN server and read every credential and packet.
+        //
+        // The server must present a certificate valid for the address the user
+        // connects to (e.g. Let's Encrypt on a DNS name). A self-signed dev
+        // server must have its certificate installed in the machine's Trusted
+        // Root store.
         if (sslPolicyErrors == SslPolicyErrors.None)
         {
             return true;
         }
 
-        _logger.LogWarning("Certificate validation warning: {Errors}", sslPolicyErrors);
-
-        // For development purposes, accept self-signed certificates.
-        // SslPolicyErrors is a [Flags] enum: the self-signed server cert
-        // (CN=opentunnel-vpn) reached via a different host triggers BOTH
-        // RemoteCertificateChainErrors AND RemoteCertificateNameMismatch, so an
-        // exact `==` on either flag alone fails. Accept as long as the only
-        // errors are chain/name mismatch (matches the iOS/macOS/Android clients).
-        // TODO: In production, implement proper certificate pinning.
-        var acceptable = SslPolicyErrors.RemoteCertificateChainErrors |
-                         SslPolicyErrors.RemoteCertificateNameMismatch;
-        if ((sslPolicyErrors & ~acceptable) == SslPolicyErrors.None)
-        {
-            _logger.LogWarning("Accepting self-signed certificate for development");
-            return true;
-        }
-
+        _logger.LogError("Rejecting server certificate: {Errors}", sslPolicyErrors);
         return false;
     }
 
