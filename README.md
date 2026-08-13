@@ -99,13 +99,13 @@ docker logs -f opentunnel-vpn
 openssl s_client -connect localhost:1194 -tls1_3
 ```
 
-## Default Credentials
+## Creating the First User
 
-| Username | Password |
-|----------|----------|
-| testuser | test123 |
-
-> **Warning**: Change the default password immediately in production!
+No VPN users are seeded — earlier versions shipped `admin/admin123` and
+`testuser/test123`, i.e. the same known credentials on every install's live
+VPN. Instead, provision users from the admin panel: set `ADMIN_PASSWORD`
+(and/or `ADMIN_SSO_EMAILS`) in your `.env`, open the panel, and add users under
+**Users**. You can also insert one directly (see [Adding Users](#adding-users)).
 
 ## Client Setup
 
@@ -264,7 +264,7 @@ docker exec opentunnel-db psql -U vpn -c "SELECT username FROM users;"
 
 # Reset user password
 docker exec opentunnel-db psql -U vpn -c \
-  "UPDATE users SET password_hash='new-bcrypt-hash' WHERE username='testuser';"
+  "UPDATE users SET password_hash='new-bcrypt-hash' WHERE username='your-user';"
 ```
 
 ### TUN Device Error

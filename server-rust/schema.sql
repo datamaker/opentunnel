@@ -66,11 +66,8 @@ CREATE TRIGGER update_users_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
--- Insert default admin user (password: admin123)
--- In production, change this password immediately!
-INSERT INTO users (username, password_hash, email, max_connections)
-VALUES ('admin', '$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 'admin@example.com', 5);
-
--- Sample user for testing (password: test123)
-INSERT INTO users (username, password_hash, email)
-VALUES ('testuser', '$2b$10$X0x7rb4SJjhsm5wBdiGTrOaDxbb18joxI08SrtEECg4R.SqjApqB2', 'test@example.com');
+-- No VPN users are seeded. Shipping a known default password (the old
+-- admin/admin123 and testuser/test123 rows) meant every install accepted the
+-- same credentials on a live VPN. Create your first user from the admin panel
+-- instead (set ADMIN_PASSWORD or ADMIN_SSO_EMAILS, then Users → add) — the
+-- intended provisioning path.

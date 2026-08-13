@@ -69,3 +69,8 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 
+
+# Android signing keys — never commit these
+*.keystore
+*.jks
+*.keystore.base64
