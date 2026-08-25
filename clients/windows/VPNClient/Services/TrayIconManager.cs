@@ -82,6 +82,7 @@ public sealed class TrayIconManager : IDisposable
         _notifyIcon.DoubleClick += (_, _) => ShowWindow();
 
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
+        _viewModel.TrayNotificationRequested += OnTrayNotificationRequested;
         UpdateVisuals();
     }
 
@@ -91,11 +92,31 @@ public sealed class TrayIconManager : IDisposable
     {
         if (e.PropertyName is nameof(MainViewModel.IsConnected)
             or nameof(MainViewModel.IsConnecting)
+            or nameof(MainViewModel.IsReconnecting)
             or nameof(MainViewModel.ConnectionStatus))
         {
             // Tunnel events can arrive on background threads; touch the tray on the UI thread.
             _window.Dispatcher.Invoke(UpdateVisuals);
         }
+    }
+
+    /// <summary>
+    /// Balloon notifications from the view-model: unexpected disconnect,
+    /// successful reconnect, or reconnect failure. The view-model already
+    /// checks the DisconnectNotify setting before raising this.
+    /// </summary>
+    private void OnTrayNotificationRequested(object? sender, TrayNotificationEventArgs e)
+    {
+        // Raised from tunnel/retry-loop background threads; NotifyIcon is UI-affine.
+        _window.Dispatcher.Invoke(() =>
+        {
+            if (_disposed) return;
+            _notifyIcon.ShowBalloonTip(
+                5000,
+                e.Title,
+                e.Message,
+                e.IsError ? Forms.ToolTipIcon.Warning : Forms.ToolTipIcon.Info);
+        });
     }
 
     private void UpdateVisuals()
@@ -108,7 +129,7 @@ public sealed class TrayIconManager : IDisposable
         {
             _notifyIcon.Icon = _connectedIcon;
         }
-        else if (_viewModel.IsConnecting)
+        else if (_viewModel.IsConnecting || _viewModel.IsReconnecting)
         {
             _notifyIcon.Icon = _connectingIcon;
         }
@@ -121,8 +142,11 @@ public sealed class TrayIconManager : IDisposable
         _notifyIcon.Text = Truncate($"OpenTunnel — {status}", 63);
         _statusItem.Text = status;
 
-        _connectItem.Enabled = _viewModel.IsAuthenticated && !_viewModel.IsConnected && !_viewModel.IsConnecting;
-        _disconnectItem.Enabled = _viewModel.IsConnected || _viewModel.IsConnecting;
+        _connectItem.Enabled = _viewModel.IsAuthenticated && !_viewModel.IsConnected
+            && !_viewModel.IsConnecting && !_viewModel.IsReconnecting;
+        // Keep Disconnect available while auto-reconnecting so the user can
+        // abort the retry loop from the tray.
+        _disconnectItem.Enabled = _viewModel.IsConnected || _viewModel.IsConnecting || _viewModel.IsReconnecting;
     }
 
     // MARK: - Actions
@@ -206,6 +230,7 @@ public sealed class TrayIconManager : IDisposable
         _disposed = true;
 
         _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        _viewModel.TrayNotificationRequested -= OnTrayNotificationRequested;
 
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();

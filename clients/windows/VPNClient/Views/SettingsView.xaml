@@ -105,6 +105,44 @@
                            Foreground="{StaticResource TextSecondaryBrush}" Margin="4,0,0,8"/>
 
                 <Border Background="#F9F9F9" CornerRadius="6" Padding="16" Margin="0,0,0,8">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel>
+                            <TextBlock Text="Auto-reconnect" FontSize="14"
+                                       Foreground="{StaticResource TextPrimaryBrush}"/>
+                            <TextBlock Text="Reconnect automatically if the connection drops unexpectedly"
+                                       FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
+                                       Margin="0,4,0,0"/>
+                        </StackPanel>
+                        <CheckBox x:Name="AutoReconnectCheckBox" Grid.Column="1"
+                                  VerticalAlignment="Center" IsChecked="True"/>
+                    </Grid>
+                </Border>
+
+                <Border Background="#F9F9F9" CornerRadius="6" Padding="16" Margin="0,0,0,8">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel>
+                            <TextBlock Text="Disconnect notifications" FontSize="14"
+                                       Foreground="{StaticResource TextPrimaryBrush}"/>
+                            <TextBlock Text="Show a tray notification when the VPN disconnects unexpectedly"
+                                       FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
+                                       Margin="0,4,0,0"/>
+                        </StackPanel>
+                        <CheckBox x:Name="DisconnectNotifyCheckBox" Grid.Column="1"
+                                  VerticalAlignment="Center" IsChecked="True"/>
+                    </Grid>
+                </Border>
+
+                <Border Background="#F9F9F9" CornerRadius="6" Padding="16" Margin="0,0,0,8">
                     <StackPanel>
                         <TextBlock Text="MTU Size" FontSize="14"
                                    Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,8"/>

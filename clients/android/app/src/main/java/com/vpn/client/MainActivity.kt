@@ -70,6 +70,11 @@ class MainActivity : ComponentActivity() {
                     Log.d("MainActivity", "VPN Disconnected")
                     vpnViewModel.onVpnDisconnected()
                 }
+                "com.vpn.client.VPN_RECONNECTING" -> {
+                    val attempt = intent.getIntExtra("attempt", 0)
+                    Log.d("MainActivity", "VPN Reconnecting, attempt $attempt")
+                    vpnViewModel.onVpnReconnecting(attempt)
+                }
                 "com.vpn.client.VPN_STATS" -> {
                     val received = intent.getLongExtra("bytes_received", 0)
                     val sent = intent.getLongExtra("bytes_sent", 0)
@@ -177,6 +182,7 @@ class MainActivity : ComponentActivity() {
             addAction("com.vpn.client.VPN_CONNECTED")
             addAction("com.vpn.client.VPN_ERROR")
             addAction("com.vpn.client.VPN_DISCONNECTED")
+            addAction("com.vpn.client.VPN_RECONNECTING")
             addAction("com.vpn.client.VPN_STATS")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -203,7 +209,11 @@ class MainActivity : ComponentActivity() {
     /** Re-applies the service's live state to the UI. */
     private fun syncWithService() {
         val live = MyVpnService.liveState
-        if (live != null) {
+        val reconnectAttempt = MyVpnService.liveReconnectAttempt
+        if (live != null && reconnectAttempt > 0) {
+            // The service is mid-reconnect — show that, not a stale Connected.
+            vpnViewModel.onVpnReconnecting(reconnectAttempt)
+        } else if (live != null) {
             vpnViewModel.onVpnConnected(
                 assignedIp = live.assignedIp,
                 gateway = live.gateway,
@@ -215,7 +225,9 @@ class MainActivity : ComponentActivity() {
                 MyVpnService.liveBytesReceived,
                 MyVpnService.liveBytesSent
             )
-        } else if (vpnViewModel.connectionState.value == VpnConnectionState.CONNECTED) {
+        } else if (vpnViewModel.connectionState.value == VpnConnectionState.CONNECTED ||
+            vpnViewModel.connectionState.value == VpnConnectionState.RECONNECTING
+        ) {
             // Tunnel went down while we were in the background.
             vpnViewModel.onVpnDisconnected()
         }
@@ -245,11 +257,14 @@ class MainActivity : ComponentActivity() {
             action = MyVpnService.ACTION_CONNECT
             putExtra(MyVpnService.EXTRA_SERVER_ADDRESS, vpnViewModel.serverAddress.value)
             putExtra(MyVpnService.EXTRA_SERVER_PORT, vpnViewModel.serverPort.value)
+            putExtra(MyVpnService.EXTRA_AUTO_RECONNECT, vpnViewModel.autoReconnect.value)
+            putExtra(MyVpnService.EXTRA_DISCONNECT_NOTIFY, vpnViewModel.disconnectNotify.value)
             if (vpnViewModel.authMode.value == VpnViewModel.AUTH_MODE_SSO) {
-                // SSO: reconnect with the stored 30-day session token —
-                // no password is ever kept for SSO users.
+                // SSO: reconnect with the stored 30-day session token. The
+                // server rotates it on every auth (the service persists the
+                // rotation), so always read the freshest value.
                 putExtra(MyVpnService.EXTRA_AUTH_TYPE, MyVpnService.AUTH_TYPE_SESSION)
-                putExtra(MyVpnService.EXTRA_TOKEN, vpnViewModel.sessionToken.value)
+                putExtra(MyVpnService.EXTRA_TOKEN, vpnViewModel.latestSessionToken())
             } else {
                 putExtra(MyVpnService.EXTRA_USERNAME, vpnViewModel.username.value)
                 putExtra(MyVpnService.EXTRA_PASSWORD, vpnViewModel.password.value)

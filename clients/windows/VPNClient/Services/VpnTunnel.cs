@@ -35,6 +35,17 @@ public class VpnTunnel : IDisposable
     private long _packetsReceived;
     private long _packetsSent;
 
+    // Dead-peer detection: last time anything arrived from the server
+    // (Environment.TickCount64 milliseconds). Updated by the receive loop,
+    // checked by the keepalive loop.
+    private long _lastActivityTicks;
+
+    // True once an unexpected-disconnect teardown has been started for the
+    // current session, so concurrent failures (receive + send + keepalive all
+    // erroring at once) tear down only once. Guarded by _stateLock; reset on
+    // the next ConnectCoreAsync.
+    private bool _unexpectedTeardown;
+
     public event EventHandler<ConnectionStateEventArgs>? ConnectionStateChanged;
     public event EventHandler<VpnErrorEventArgs>? ErrorOccurred;
 
@@ -101,6 +112,11 @@ public class VpnTunnel : IDisposable
 
         _cancellationTokenSource = new CancellationTokenSource();
         var cancellationToken = _cancellationTokenSource.Token;
+
+        lock (_stateLock)
+        {
+            _unexpectedTeardown = false;
+        }
 
         // Reset per-session cumulative counters.
         Interlocked.Exchange(ref _bytesReceived, 0);
@@ -241,6 +257,40 @@ public class VpnTunnel : IDisposable
         await CleanupAsync();
         RaiseConnectionStateChanged(ConnectionState.Disconnected, null);
         _logger.LogInformation("Disconnected from VPN");
+    }
+
+    /// <summary>
+    /// Tear down after the connection died without the user asking for it
+    /// (server closed the stream, socket error, or dead-peer idle timeout).
+    /// Raises ErrorOccurred with the reason, runs the cleanup off the calling
+    /// loop's thread (CleanupAsync awaits the forwarding tasks, so it must not
+    /// be awaited from inside one of them), and finally raises the Disconnected
+    /// state so the UI stops showing "Connected" on a dead socket.
+    /// </summary>
+    private void HandleUnexpectedDisconnect(string message, Exception? exception = null)
+    {
+        lock (_stateLock)
+        {
+            if (_unexpectedTeardown) return;
+            _unexpectedTeardown = true;
+        }
+
+        _logger.LogWarning(exception, "Unexpected disconnect: {Message}", message);
+        RaiseError(message, exception, isUnexpectedDisconnect: true);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await CleanupAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error cleaning up after unexpected disconnect");
+            }
+
+            RaiseConnectionStateChanged(ConnectionState.Disconnected, null);
+        });
     }
 
     private async Task CleanupAsync()
@@ -418,6 +468,8 @@ public class VpnTunnel : IDisposable
 
     private void StartPacketForwarding(CancellationToken cancellationToken)
     {
+        Interlocked.Exchange(ref _lastActivityTicks, Environment.TickCount64);
+
         // Task to receive packets from TLS and send to TUN
         _receiveTask = Task.Run(async () =>
         {
@@ -429,9 +481,19 @@ public class VpnTunnel : IDisposable
 
                     if (message == null)
                     {
-                        _logger.LogWarning("Received null message, connection may be closed");
-                        break;
+                        // End of stream: the server closed the connection.
+                        // Without a full teardown the UI would keep showing
+                        // "Connected" on a dead socket (ghost connection).
+                        if (!cancellationToken.IsCancellationRequested)
+                        {
+                            _logger.LogWarning("Server closed the connection (end of stream)");
+                            HandleUnexpectedDisconnect("서버와의 연결이 끊어졌습니다.");
+                        }
+                        return;
                     }
+
+                    // Any inbound message proves the peer is alive.
+                    Interlocked.Exchange(ref _lastActivityTicks, Environment.TickCount64);
 
                     switch (message.Type)
                     {
@@ -492,7 +554,10 @@ public class VpnTunnel : IDisposable
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in receive task");
-                RaiseError("Error receiving data from server", ex);
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    HandleUnexpectedDisconnect("서버로부터 데이터를 받는 중 오류가 발생했습니다.", ex);
+                }
             }
         }, cancellationToken);
 
@@ -528,20 +593,37 @@ public class VpnTunnel : IDisposable
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in send task");
-                RaiseError("Error sending data to server", ex);
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    HandleUnexpectedDisconnect("서버로 데이터를 보내는 중 오류가 발생했습니다.", ex);
+                }
             }
         }, cancellationToken);
 
-        // Keepalive task
+        // Keepalive task: sends a keepalive every 30s and doubles as the
+        // dead-peer detector — the server keepalives on its own schedule and
+        // ACKs ours, so more than 90s with no inbound traffic at all means the
+        // connection is gone (half-open TCP after sleep/resume or a network
+        // change) even while our own sends still appear to succeed.
         _keepaliveTask = Task.Run(async () =>
         {
             var keepaliveInterval = TimeSpan.FromSeconds(30);
+            const long idleTimeoutMs = 90_000;
 
             try
             {
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     await Task.Delay(keepaliveInterval, cancellationToken);
+
+                    var idleMs = Environment.TickCount64 - Interlocked.Read(ref _lastActivityTicks);
+                    if (idleMs > idleTimeoutMs)
+                    {
+                        _logger.LogWarning("No data received from server for {IdleSeconds}s, treating peer as dead",
+                            idleMs / 1000);
+                        HandleUnexpectedDisconnect("서버 응답이 90초 이상 없어 연결이 끊어진 것으로 판단했습니다.");
+                        return;
+                    }
 
                     var message = new VpnMessage
                     {
@@ -560,6 +642,10 @@ public class VpnTunnel : IDisposable
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in keepalive task");
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    HandleUnexpectedDisconnect("Keepalive 전송에 실패해 연결을 종료합니다.", ex);
+                }
             }
         }, cancellationToken);
     }
@@ -585,9 +671,9 @@ public class VpnTunnel : IDisposable
         ConnectionStateChanged?.Invoke(this, new ConnectionStateEventArgs(state, assignedIP));
     }
 
-    private void RaiseError(string message, Exception? exception = null)
+    private void RaiseError(string message, Exception? exception = null, bool isUnexpectedDisconnect = false)
     {
-        ErrorOccurred?.Invoke(this, new VpnErrorEventArgs(message, exception));
+        ErrorOccurred?.Invoke(this, new VpnErrorEventArgs(message, exception, isUnexpectedDisconnect));
     }
 
     public void Dispose()
@@ -608,7 +694,11 @@ public enum ConnectionState
     Connecting,
     Authenticating,
     ConfiguringInterface,
-    Connected
+    Connected,
+
+    /// <summary>Automatic reconnect after an unexpected drop is in progress
+    /// (driven by the view-model's retry loop, not the tunnel itself).</summary>
+    Reconnecting
 }
 
 /// <summary>
@@ -634,10 +724,16 @@ public class VpnErrorEventArgs : EventArgs
     public string Message { get; }
     public Exception? Exception { get; }
 
-    public VpnErrorEventArgs(string message, Exception? exception = null)
+    /// <summary>True when the error is the reason for an unexpected disconnect
+    /// (server closed the stream, dead-peer timeout). The UI surfaces these via
+    /// the tray balloon instead of a modal error dialog.</summary>
+    public bool IsUnexpectedDisconnect { get; }
+
+    public VpnErrorEventArgs(string message, Exception? exception = null, bool isUnexpectedDisconnect = false)
     {
         Message = message;
         Exception = exception;
+        IsUnexpectedDisconnect = isUnexpectedDisconnect;
     }
 }
 

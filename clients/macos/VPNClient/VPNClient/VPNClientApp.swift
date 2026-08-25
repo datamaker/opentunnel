@@ -37,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusController = StatusItemController()
+        // Install the notification-center delegate so disconnect/reconnect
+        // banners are shown even while the app is frontmost.
+        NotificationService.shared.activate()
     }
 }
 #endif

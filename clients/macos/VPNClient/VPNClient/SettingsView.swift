@@ -19,6 +19,8 @@ struct SettingsView: View {
     @State private var serverPort: String = "1194"
     @State private var autoConnect: Bool = false
     @State private var connectOnWiFi: Bool = true
+    @State private var autoReconnect: Bool = true
+    @State private var notifyDisconnect: Bool = true
     @State private var killSwitch: Bool = false
     @State private var showingResetConfirmation: Bool = false
 
@@ -95,12 +97,14 @@ struct SettingsView: View {
     // MARK: - Connection Section
     private var connectionSection: some View {
         Section {
-            Toggle("Auto-connect on launch", isOn: $autoConnect)
+            Toggle("Auto-connect at app launch", isOn: $autoConnect)
             Toggle("Connect on Wi-Fi", isOn: $connectOnWiFi)
+            Toggle("Auto-reconnect after connection drops", isOn: $autoReconnect)
+            Toggle("Notify on unexpected disconnect", isOn: $notifyDisconnect)
         } header: {
             Text("Connection Options")
         } footer: {
-            Text("Configure when the VPN should automatically connect.")
+            Text("Auto-reconnect retries in the background when the connection drops unexpectedly. Notifications alert you when the VPN disconnects without your action.")
         }
     }
 
@@ -242,6 +246,10 @@ struct SettingsView: View {
         } else {
             connectOnWiFi = defaults.bool(forKey: "vpn_connect_wifi")
         }
+
+        // Both default ON when never set.
+        autoReconnect = VPNManager.isAutoReconnectEnabled
+        notifyDisconnect = NotificationService.isNotifyEnabled
     }
 
     private func saveSettings() {
@@ -251,6 +259,8 @@ struct SettingsView: View {
         defaults.set(serverPort, forKey: "vpn_server_port")
         defaults.set(autoConnect, forKey: "vpn_auto_connect")
         defaults.set(connectOnWiFi, forKey: "vpn_connect_wifi")
+        defaults.set(autoReconnect, forKey: VPNManager.autoReconnectKey)
+        defaults.set(notifyDisconnect, forKey: NotificationService.notifyDisconnectKey)
         defaults.set(killSwitch, forKey: "vpn_kill_switch")
 
         // Reflect the edited server details back into the live session so the
@@ -269,6 +279,8 @@ struct SettingsView: View {
         serverPort = "1194"
         autoConnect = false
         connectOnWiFi = true
+        autoReconnect = true
+        notifyDisconnect = true
         killSwitch = false
     }
 }

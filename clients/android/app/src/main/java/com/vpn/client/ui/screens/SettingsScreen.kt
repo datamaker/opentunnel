@@ -27,6 +27,7 @@ fun SettingsScreen(
     val serverAddress by viewModel.serverAddress.collectAsState()
     val serverPort by viewModel.serverPort.collectAsState()
     val autoReconnect by viewModel.autoReconnect.collectAsState()
+    val disconnectNotify by viewModel.disconnectNotify.collectAsState()
     val killSwitch by viewModel.killSwitch.collectAsState()
     val splitTunneling by viewModel.splitTunneling.collectAsState()
 
@@ -121,6 +122,16 @@ fun SettingsScreen(
                     icon = Icons.Outlined.Refresh,
                     checked = autoReconnect,
                     onCheckedChange = { viewModel.setAutoReconnect(it) }
+                )
+
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+                SettingsSwitch(
+                    title = "Disconnect Alerts",
+                    description = "Notify when the VPN disconnects unexpectedly",
+                    icon = Icons.Outlined.NotificationsActive,
+                    checked = disconnectNotify,
+                    onCheckedChange = { viewModel.setDisconnectNotify(it) }
                 )
 
                 Divider(modifier = Modifier.padding(vertical = 8.dp))
@@ -237,6 +248,7 @@ fun SettingsScreen(
                         // Reset to defaults using available ViewModel setters
                         viewModel.updateServerSettings("", 1194)
                         viewModel.setAutoReconnect(true)
+                        viewModel.setDisconnectNotify(true)
                         viewModel.setKillSwitch(false)
                         viewModel.setSplitTunneling(false)
                         editedServerAddress = ""

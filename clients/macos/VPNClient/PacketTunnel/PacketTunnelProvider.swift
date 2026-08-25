@@ -114,7 +114,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             guard let self = self, self.isRunning else { return }
             if Date().timeIntervalSince(self.lastActivity) > self.idleTimeout {
                 self.logger.error("Keepalive timeout — no activity, stopping tunnel")
-                self.cancelTunnelWithError(NSError(
+                self.teardownTunnel(with: NSError(
                     domain: "VPN", code: -1,
                     userInfo: [NSLocalizedDescriptionKey: "Keepalive timeout"]))
                 return
@@ -207,14 +207,29 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 pendingCompletion?(VPNError.connectionFailed(error.localizedDescription))
                 pendingCompletion = nil
             } else {
-                // Connection failed after tunnel was established
-                logger.error("Connection lost after tunnel setup!")
+                // Connection failed after tunnel was established — tear the
+                // tunnel down right away so the app observes .disconnected
+                // immediately (and can notify/reconnect) instead of leaving a
+                // dead tunnel up until the keepalive idle timeout fires.
+                logger.error("Connection lost after tunnel setup — cancelling tunnel")
+                teardownTunnel(with: VPNError.connectionFailed(error.localizedDescription))
             }
         case .cancelled:
             logger.info("Connection cancelled")
         @unknown default:
             logger.info("Unknown connection state")
         }
+    }
+
+    /// Tears the tunnel down after an unrecoverable transport failure (TLS
+    /// connection failed, receive error, server EOF). Guarded by `isRunning`
+    /// state so overlapping failure paths (e.g. a receive error racing the
+    /// NWConnection .failed callback) only cancel once.
+    private func teardownTunnel(with error: Error) {
+        guard isRunning else { return }
+        isRunning = false
+        stopKeepalive()
+        cancelTunnelWithError(error)
     }
 
     // MARK: - Authentication
@@ -288,10 +303,14 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
             if let error = error {
                 self.logger.error("Receive error: \(error), isComplete=\(isComplete)")
-                // Don't just return - we need to handle the error properly
                 if self.pendingCompletion != nil {
+                    // Still connecting: fail the start so the OS tears down.
                     self.pendingCompletion?(VPNError.connectionFailed("Receive error: \(error)"))
                     self.pendingCompletion = nil
+                } else {
+                    // Established tunnel lost its transport — cancel now so the
+                    // app observes .disconnected immediately.
+                    self.teardownTunnel(with: VPNError.connectionFailed("Receive error: \(error)"))
                 }
                 return
             }
@@ -304,6 +323,14 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
             if isComplete {
                 self.logger.info("Connection completed (EOF)")
+                if self.pendingCompletion != nil {
+                    self.pendingCompletion?(VPNError.disconnected("Server closed the connection"))
+                    self.pendingCompletion = nil
+                } else {
+                    // Server closed the connection under an established tunnel —
+                    // cancel so the app observes .disconnected immediately.
+                    self.teardownTunnel(with: VPNError.disconnected("Server closed the connection"))
+                }
                 return
             }
 

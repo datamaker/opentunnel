@@ -115,7 +115,7 @@ struct MainView: View {
                     .fill(statusColor)
                     .frame(width: 60, height: 60)
 
-                if isConnecting || isDisconnecting {
+                if isConnecting || isDisconnecting || isReconnecting {
                     ProgressView()
                         .progressViewStyle(CircularProgressViewStyle(tint: .white))
                         .scaleEffect(1.2)
@@ -208,7 +208,8 @@ struct MainView: View {
     // MARK: - Connection Button
     private var connectionButton: some View {
         Button {
-            if isConnected {
+            if isConnected || isReconnecting {
+                // During auto-reconnect the button acts as Cancel.
                 vpnManager.disconnect()
             } else {
                 connect()
@@ -237,17 +238,15 @@ struct MainView: View {
 
     // MARK: - Actions
     private func connect() {
-        vpnManager.serverAddress = "\(session.serverHost):\(session.serverPort)"
         Task {
-            if session.authMethod == .sso {
-                guard let credential = session.ssoCredential() else {
-                    // No id_token and no session token — SSO must be redone.
-                    session.logout()
-                    return
-                }
-                try? await vpnManager.connect(authType: credential.authType, token: credential.token)
-            } else {
-                try? await vpnManager.connect(username: session.username, password: session.password)
+            do {
+                try await vpnManager.connectUsingCurrentSession()
+            } catch VPNError.authenticationFailed {
+                // No usable credential (e.g. no id_token and no session token —
+                // SSO must be redone): back to the login screen.
+                session.logout()
+            } catch {
+                // Save/start errors surface via vpnManager.errorMessage.
             }
         }
     }
@@ -258,6 +257,8 @@ struct MainView: View {
         vpnManager.status == .connecting || vpnManager.status == .reasserting
     }
     private var isDisconnecting: Bool { vpnManager.status == .disconnecting }
+    /// App-driven auto-reconnect (backoff retries) — cancellable by the user.
+    private var isReconnecting: Bool { vpnManager.status == .reconnecting }
 
     private var connectionDuration: String {
         guard let start = vpnManager.connectedTime else { return "00:00:00" }
@@ -288,7 +289,7 @@ struct MainView: View {
         switch vpnManager.status {
         case .connected:
             return .green
-        case .connecting, .reasserting:
+        case .connecting, .reasserting, .reconnecting:
             return .orange
         case .disconnecting:
             return .yellow
@@ -301,7 +302,7 @@ struct MainView: View {
         switch vpnManager.status {
         case .connected:
             return "checkmark"
-        case .connecting, .reasserting, .disconnecting:
+        case .connecting, .reasserting, .reconnecting, .disconnecting:
             return "ellipsis"
         case .disconnected, .invalid:
             return "xmark"
@@ -316,7 +317,7 @@ struct MainView: View {
             return "Connecting..."
         case .disconnecting:
             return "Disconnecting..."
-        case .reasserting:
+        case .reasserting, .reconnecting:
             return "Reconnecting..."
         case .disconnected:
             return "Disconnected"
@@ -335,6 +336,8 @@ struct MainView: View {
             return "Closing connection..."
         case .reasserting:
             return "Restoring connection..."
+        case .reconnecting:
+            return "Connection lost — trying to reconnect..."
         case .disconnected:
             return "Tap Connect to secure your connection"
         case .invalid:
@@ -352,13 +355,15 @@ struct MainView: View {
             return "Disconnecting..."
         case .reasserting:
             return "Reconnecting..."
+        case .reconnecting:
+            return "Cancel"
         case .disconnected, .invalid:
             return "Connect"
         }
     }
 
     private var buttonColor: Color {
-        if isConnected {
+        if isConnected || isReconnecting {
             return .red
         } else if isConnecting || isDisconnecting {
             return .gray

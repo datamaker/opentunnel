@@ -144,11 +144,13 @@ private fun Header(
 
 @Composable
 private fun ConnectionStatusCard(connectionState: VpnConnectionState) {
-    val isConnecting = connectionState == VpnConnectionState.CONNECTING
+    val isConnecting = connectionState == VpnConnectionState.CONNECTING ||
+            connectionState == VpnConnectionState.RECONNECTING
 
     val statusColor = when (connectionState) {
         VpnConnectionState.CONNECTED -> StatusGreen
         VpnConnectionState.CONNECTING -> StatusOrange
+        VpnConnectionState.RECONNECTING -> StatusOrange
         VpnConnectionState.DISCONNECTED -> StatusGray
         VpnConnectionState.ERROR -> StatusRed
     }
@@ -156,6 +158,7 @@ private fun ConnectionStatusCard(connectionState: VpnConnectionState) {
     val statusIcon = when (connectionState) {
         VpnConnectionState.CONNECTED -> Icons.Filled.Check
         VpnConnectionState.CONNECTING -> Icons.Filled.MoreHoriz
+        VpnConnectionState.RECONNECTING -> Icons.Filled.Refresh
         VpnConnectionState.DISCONNECTED -> Icons.Filled.Close
         VpnConnectionState.ERROR -> Icons.Filled.PriorityHigh
     }
@@ -163,6 +166,7 @@ private fun ConnectionStatusCard(connectionState: VpnConnectionState) {
     val statusTitle = when (connectionState) {
         VpnConnectionState.CONNECTED -> "Connected"
         VpnConnectionState.CONNECTING -> "Connecting..."
+        VpnConnectionState.RECONNECTING -> "Reconnecting..."
         VpnConnectionState.DISCONNECTED -> "Disconnected"
         VpnConnectionState.ERROR -> "Connection Error"
     }
@@ -170,6 +174,7 @@ private fun ConnectionStatusCard(connectionState: VpnConnectionState) {
     val statusDescription = when (connectionState) {
         VpnConnectionState.CONNECTED -> "Your connection is secure"
         VpnConnectionState.CONNECTING -> "Establishing secure tunnel..."
+        VpnConnectionState.RECONNECTING -> "Connection lost. Restoring the tunnel..."
         VpnConnectionState.DISCONNECTED -> "Tap Connect to secure your connection"
         VpnConnectionState.ERROR -> "Something went wrong. Please try again."
     }
@@ -404,12 +409,16 @@ private fun ConnectionButton(
     onConnectClick: () -> Unit,
     onDisconnectClick: () -> Unit
 ) {
-    val isConnected = connectionState == VpnConnectionState.CONNECTED
+    // RECONNECTING acts like CONNECTED here: red button, Stop icon, tap stops.
+    val isConnected = connectionState == VpnConnectionState.CONNECTED ||
+            connectionState == VpnConnectionState.RECONNECTING
     val isConnecting = connectionState == VpnConnectionState.CONNECTING
 
     val buttonTitle = when (connectionState) {
         VpnConnectionState.CONNECTED -> "Disconnect"
         VpnConnectionState.CONNECTING -> "Connecting..."
+        // Mid-reconnect the only meaningful action is to stop retrying.
+        VpnConnectionState.RECONNECTING -> "Disconnect"
         VpnConnectionState.DISCONNECTED -> "Connect"
         VpnConnectionState.ERROR -> "Connect"
     }
@@ -426,7 +435,8 @@ private fun ConnectionButton(
     Button(
         onClick = {
             when (connectionState) {
-                VpnConnectionState.CONNECTED -> onDisconnectClick()
+                VpnConnectionState.CONNECTED,
+                VpnConnectionState.RECONNECTING -> onDisconnectClick()
                 VpnConnectionState.DISCONNECTED, VpnConnectionState.ERROR -> onConnectClick()
                 VpnConnectionState.CONNECTING -> { /* disabled */ }
             }

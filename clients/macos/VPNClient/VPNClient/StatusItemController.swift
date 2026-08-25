@@ -96,7 +96,10 @@ final class StatusItemController: NSObject {
 
         statusHeaderItem.title = "OpenTunnel — \(vpn.status.rawValue)"
 
-        let transient = (vpn.status == .connecting || vpn.status == .reasserting || vpn.status == .disconnecting)
+        // .reconnecting (app-driven auto-reconnect) counts as a connecting-type
+        // transient: Connect stays disabled, Disconnect acts as "cancel".
+        let transient = (vpn.status == .connecting || vpn.status == .reasserting
+                         || vpn.status == .reconnecting || vpn.status == .disconnecting)
         connectItem.isEnabled = session.isLoggedIn && !connected && !transient
         disconnectItem.isEnabled = connected || transient
     }
@@ -105,8 +108,18 @@ final class StatusItemController: NSObject {
 
     @objc private func connectTapped() {
         guard session.isLoggedIn else { return }
-        vpn.serverAddress = "\(session.serverHost):\(session.serverPort)"
-        Task { try? await vpn.connect(username: session.username, password: session.password) }
+        // Same connect path as MainView: SSO sessions use the stored session
+        // token / id_token, password sessions use username+password.
+        Task { [session] in
+            do {
+                try await VPNManager.shared.connectUsingCurrentSession()
+            } catch VPNError.authenticationFailed {
+                // No usable credential — drop back to the login screen.
+                session.logout()
+            } catch {
+                // Other errors surface via VPNManager.errorMessage.
+            }
+        }
     }
 
     @objc private func disconnectTapped() {

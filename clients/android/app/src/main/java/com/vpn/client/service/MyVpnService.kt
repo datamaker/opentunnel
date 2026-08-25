@@ -23,6 +23,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -44,11 +45,34 @@ class MyVpnService : VpnService() {
         const val AUTH_TYPE_PASSWORD = "password"
         const val AUTH_TYPE_SESSION = "session"
 
+        // Settings passed from the UI (persisted in SharedPreferences by the
+        // VpnViewModel; the service only trusts the intent extras).
+        const val EXTRA_AUTO_RECONNECT = "auto_reconnect"
+        const val EXTRA_DISCONNECT_NOTIFY = "disconnect_notify"
+
         private const val TAG = "MyVpnService"
         private const val NOTIFICATION_CHANNEL_ID = "vpn_service_channel"
         private const val NOTIFICATION_ID = 1
         private const val KEEPALIVE_INTERVAL_MS = 30000L
         private const val READ_BUFFER_SIZE = 32767
+
+        // High-importance channel for the one notification that must actually be
+        // seen: the tunnel dropped and is not coming back on its own. Separate
+        // from the silent ongoing service channel.
+        private const val ALERT_CHANNEL_ID = "vpn_alerts"
+        private const val ALERT_NOTIFICATION_ID = 2
+
+        // Dead-peer detection: the server keepalives every 30s and acks ours, so
+        // a healthy link never goes 90s without a single inbound message. When it
+        // does, the TCP socket is a zombie (e.g. network path silently died) and
+        // waiting for the 60s soTimeout on a socket that still acks at the kernel
+        // level would hang forever.
+        private const val IDLE_TIMEOUT_MS = 90000L
+
+        private const val MAX_RECONNECT_ATTEMPTS = 10
+        private val RECONNECT_DELAYS_MS = longArrayOf(
+            2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000, 30000, 30000
+        )
 
         /**
          * The live tunnel, published so the UI can re-sync after the app process
@@ -68,6 +92,14 @@ class MyVpnService : VpnService() {
         @Volatile var liveBytesReceived: Long = 0L
             private set
         @Volatile var liveBytesSent: Long = 0L
+            private set
+
+        /**
+         * Non-zero while the service is retrying a dropped connection (the
+         * current attempt number). Lets a resuming UI show "reconnecting"
+         * instead of a stale "connected" while [liveState] is still published.
+         */
+        @Volatile var liveReconnectAttempt: Int = 0
             private set
 
         val isConnected: Boolean get() = liveState != null
@@ -101,6 +133,22 @@ class MyVpnService : VpnService() {
     private var password: String = ""
     private var authType: String = AUTH_TYPE_PASSWORD
     private var token: String = ""
+    private var autoReconnect: Boolean = true
+    private var disconnectNotify: Boolean = true
+
+    // Set the moment the user asks to disconnect (UI action, notification
+    // action, or service teardown) — distinguishes an intentional stop from a
+    // dropped connection so we never auto-reconnect or alert on a manual stop.
+    private val userStopped = AtomicBoolean(false)
+
+    // True while the reconnect loop owns the connection. Gates the tunnel loops'
+    // error paths so the failures of the torn-down connection don't cascade.
+    private val reconnecting = AtomicBoolean(false)
+    private var reconnectJob: Job? = null
+
+    // elapsedRealtime of the last message received from the server (any type) —
+    // the input for dead-peer detection in the keepalive loop.
+    private val lastServerActivityMs = AtomicLong(0)
 
     // Traffic statistics
     private val bytesReceived = AtomicLong(0)
@@ -134,6 +182,8 @@ class MyVpnService : VpnService() {
                 password = intent.getStringExtra(EXTRA_PASSWORD) ?: ""
                 authType = intent.getStringExtra(EXTRA_AUTH_TYPE) ?: AUTH_TYPE_PASSWORD
                 token = intent.getStringExtra(EXTRA_TOKEN) ?: ""
+                autoReconnect = intent.getBooleanExtra(EXTRA_AUTO_RECONNECT, true)
+                disconnectNotify = intent.getBooleanExtra(EXTRA_DISCONNECT_NOTIFY, true)
 
                 val hasCredentials = if (authType == AUTH_TYPE_PASSWORD) {
                     username.isNotEmpty()
@@ -141,10 +191,12 @@ class MyVpnService : VpnService() {
                     token.isNotEmpty()
                 }
                 if (serverAddress.isNotEmpty() && hasCredentials) {
+                    userStopped.set(false)
                     startVpn()
                 }
             }
             ACTION_DISCONNECT -> {
+                userStopped.set(true)
                 stopVpn()
             }
         }
@@ -153,6 +205,7 @@ class MyVpnService : VpnService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        userStopped.set(true)
         stopVpn()
         serviceScope.cancel()
     }
@@ -167,16 +220,8 @@ class MyVpnService : VpnService() {
 
         serviceScope.launch {
             try {
-                // Establish TLS connection
-                tlsConnection = TlsConnection().apply {
-                    connect(serverAddress, serverPort)
-                }
-
-                // Authenticate with server
-                authenticate()
-
-                // Receive VPN configuration (sent right after auth response)
-                val config = receiveConfiguration()
+                // TLS connect + auth (rotating the stored session token) + config.
+                val config = connectAndAuthenticate()
                 vpnConfig = config
                 domainMatcher = if (config.splitTunnel && config.includedDomains.isNotEmpty()) {
                     DomainMatcher(config.includedDomains)
@@ -193,6 +238,7 @@ class MyVpnService : VpnService() {
                 tunOutput = FileOutputStream(iface.fileDescriptor)
 
                 updateNotification("Connected to $serverAddress")
+                cancelDisconnectAlert()
 
                 // Publish live state so the UI can re-sync after an app restart.
                 val connectedSince = SystemClock.elapsedRealtime()
@@ -239,6 +285,14 @@ class MyVpnService : VpnService() {
         }
 
         liveState = null
+        liveReconnectAttempt = 0
+
+        // A pending reconnect must not outlive the stop. (Cancelling from
+        // within the reconnect job itself is fine — nothing after this call
+        // suspends on that path.)
+        reconnectJob?.cancel()
+        reconnectJob = null
+        reconnecting.set(false)
 
         serviceScope.launch {
             try {
@@ -281,6 +335,39 @@ class MyVpnService : VpnService() {
      * session and asks the user to log in with SSO again.
      */
     private class SessionAuthException(message: String) : Exception(message)
+
+    /**
+     * Establishes the TLS connection, authenticates (persisting a rotated
+     * session token) and receives the pushed VPN configuration. Shared by the
+     * initial connect and every reconnect attempt.
+     */
+    private suspend fun connectAndAuthenticate(): VpnConfig {
+        tlsConnection = TlsConnection().apply {
+            connect(serverAddress, serverPort)
+        }
+        val rotatedToken = authenticate()
+        persistRotatedToken(rotatedToken)
+        val config = receiveConfiguration()
+        lastServerActivityMs.set(SystemClock.elapsedRealtime())
+        return config
+    }
+
+    /**
+     * The server rotates the 30-day session token on every authentication.
+     * Persist it to the same store the VpnViewModel reads ("vpn_session" /
+     * "session_token") so the next connect — from the UI or from this
+     * service's own reconnect loop — presents the current token instead of the
+     * consumed one.
+     */
+    private fun persistRotatedToken(newToken: String) {
+        if (authType != AUTH_TYPE_SESSION) return
+        if (newToken.isEmpty() || newToken == token) return
+        token = newToken
+        getSharedPreferences("vpn_session", MODE_PRIVATE).edit()
+            .putString("session_token", newToken)
+            .apply()
+        Log.i(TAG, "Session token rotated and persisted")
+    }
 
     private suspend fun authenticate(): String = withContext(Dispatchers.IO) {
         val connection = tlsConnection ?: throw Exception("Connection not established")
@@ -469,19 +556,32 @@ class MyVpnService : VpnService() {
                 if (reestablishMutex.isLocked || tunInput !== input) {
                     continue
                 }
+                // While the reconnect loop rebuilds the connection, the tun fd
+                // stays alive: park briefly and keep the loop running so it can
+                // serve the restored connection without being relaunched.
+                if (reconnecting.get()) {
+                    delay(200)
+                    continue
+                }
                 Log.e(TAG, "Error reading from tunnel", e)
                 handleConnectionError(e)
-                break
+                // If the error kicked off a reconnect, stay alive for it.
+                if (reconnecting.get()) continue else break
             }
         }
     }
 
     private suspend fun readFromServer() = withContext(Dispatchers.IO) {
+        // Bind to the connection this loop instance serves. A reconnect launches
+        // a fresh loop for the new connection; an old instance dying on the
+        // closed socket must not be mistaken for a failure of the current one.
+        val connection = tlsConnection ?: return@withContext
         try {
             while (isRunning.get() && isActive) {
-                val connection = tlsConnection ?: break
-
                 val (type, payload) = connection.receive()
+
+                // Any inbound message proves the peer is alive.
+                lastServerActivityMs.set(SystemClock.elapsedRealtime())
 
                 when (type) {
                     VpnMessageType.DATA_PACKET -> {
@@ -505,6 +605,9 @@ class MyVpnService : VpnService() {
                     }
                     VpnMessageType.DISCONNECT -> {
                         Log.i(TAG, "Server requested disconnect")
+                        // Deliberate kick from the server — never auto-reconnect,
+                        // but the user did not ask for this, so alert (if enabled).
+                        notifyDisconnected("서버가 연결을 종료했습니다")
                         stopVpn()
                         break
                     }
@@ -514,7 +617,7 @@ class MyVpnService : VpnService() {
                 }
             }
         } catch (e: Exception) {
-            if (isRunning.get()) {
+            if (isRunning.get() && !reconnecting.get() && tlsConnection === connection) {
                 Log.e(TAG, "Error reading from server", e)
                 handleConnectionError(e)
             }
@@ -572,16 +675,36 @@ class MyVpnService : VpnService() {
     }
 
     private suspend fun sendKeepalive() = withContext(Dispatchers.IO) {
+        // Bound to one connection, like readFromServer: a stale instance must
+        // exit quietly after a reconnect replaces the connection.
+        val connection = tlsConnection ?: return@withContext
         try {
-            while (isRunning.get() && isActive) {
+            while (isRunning.get() && isActive && tlsConnection === connection) {
                 delay(KEEPALIVE_INTERVAL_MS)
+                if (!isRunning.get() || tlsConnection !== connection) break
 
-                tlsConnection?.send(VpnMessageType.KEEPALIVE, ByteArray(0))
+                // Dead-peer detection: nothing received for IDLE_TIMEOUT_MS
+                // despite 30s keepalives means the link is silently dead — fail
+                // fast into the reconnect path instead of trusting a zombie
+                // socket.
+                val idleMs = SystemClock.elapsedRealtime() - lastServerActivityMs.get()
+                if (idleMs > IDLE_TIMEOUT_MS) {
+                    Log.w(TAG, "Dead peer: no server traffic for ${idleMs}ms")
+                    if (!reconnecting.get()) {
+                        handleConnectionError(
+                            IOException("서버 응답 없음 (${idleMs / 1000}초)")
+                        )
+                    }
+                    break
+                }
+
+                connection.send(VpnMessageType.KEEPALIVE, ByteArray(0))
                 Log.d(TAG, "Sent keepalive")
             }
         } catch (e: Exception) {
-            if (isRunning.get()) {
+            if (isRunning.get() && !reconnecting.get() && tlsConnection === connection) {
                 Log.e(TAG, "Error sending keepalive", e)
+                handleConnectionError(e)
             }
         }
     }
@@ -625,17 +748,224 @@ class MyVpnService : VpnService() {
     }
 
     private fun handleConnectionError(e: Exception) {
-        Log.e(TAG, "Connection error: ${e.message}")
-        stopVpn()
+        // Errors raised while a stop or reconnect is already in progress are
+        // just the old connection's death throes.
+        if (!isRunning.get() || reconnecting.get()) return
 
-        // Broadcast error to UI. session_auth_failed tells the UI the stored
-        // 30-day SSO session token was rejected (re-login via SSO required).
+        Log.e(TAG, "Connection error: ${e.message}")
+
+        // Reconnect/alert only apply to an ESTABLISHED tunnel dropping. A
+        // failed initial connect (wrong address, server down) shows its error
+        // in the UI the user is looking at — retrying 10 times or posting a
+        // heads-up alert for it would be noise.
+        val wasEstablished = liveState != null
+
+        // Unexpected drop with auto-reconnect on: retry in-service. A rejected
+        // session token is not retryable — reconnecting would just burn the
+        // attempts against a hard auth failure.
+        if (wasEstablished && e !is SessionAuthException &&
+            autoReconnect && !userStopped.get()
+        ) {
+            startReconnect()
+            return
+        }
+
+        val unexpected = wasEstablished && !userStopped.get()
+        stopVpn()
+        if (unexpected) {
+            notifyDisconnected(e.message)
+        }
+        broadcastError(e.message, sessionAuthFailed = e is SessionAuthException)
+    }
+
+    /** Broadcasts VPN_ERROR to the UI. session_auth_failed tells the UI the
+     *  stored 30-day SSO session token was rejected (re-login via SSO required). */
+    private fun broadcastError(message: String?, sessionAuthFailed: Boolean) {
         val intent = Intent("com.vpn.client.VPN_ERROR").apply {
             setPackage(packageName)
-            putExtra("error_message", e.message)
-            putExtra("session_auth_failed", e is SessionAuthException)
+            putExtra("error_message", message)
+            putExtra("session_auth_failed", sessionAuthFailed)
         }
         sendBroadcast(intent)
+    }
+
+    /**
+     * In-service auto-reconnect with backoff (2, 4, 8, 16, then 30s intervals,
+     * 10 attempts total). The foreground service already holds everything a
+     * retry needs — server address, auth type, current session token — so no
+     * UI round-trip is involved and the tun fd is kept up so app sockets can
+     * survive a quick recovery.
+     */
+    private fun startReconnect() {
+        if (!reconnecting.compareAndSet(false, true)) return
+
+        reconnectJob = serviceScope.launch {
+            try {
+                // Drop the broken connection; the tun interface stays up.
+                try {
+                    tlsConnection?.disconnect()
+                } catch (_: Exception) {
+                }
+                tlsConnection = null
+
+                for (attempt in 1..MAX_RECONNECT_ATTEMPTS) {
+                    liveReconnectAttempt = attempt
+                    updateNotification("재연결 중 ($attempt/$MAX_RECONNECT_ATTEMPTS)")
+                    sendBroadcast(Intent("com.vpn.client.VPN_RECONNECTING").apply {
+                        setPackage(packageName)
+                        putExtra("attempt", attempt)
+                        putExtra("max_attempts", MAX_RECONNECT_ATTEMPTS)
+                    })
+
+                    delay(RECONNECT_DELAYS_MS[attempt - 1])
+                    if (userStopped.get() || !isRunning.get()) return@launch
+
+                    try {
+                        reconnectOnce()
+
+                        // Back to normal operation: clear the flag first so the
+                        // freshly launched loops (and the surviving tunnel-read
+                        // loop) run, then tell the UI.
+                        liveReconnectAttempt = 0
+                        reconnecting.set(false)
+                        updateNotification("Connected to $serverAddress")
+                        cancelDisconnectAlert()
+
+                        val live = liveState
+                        val config = vpnConfig
+                        if (live != null && config != null) {
+                            sendBroadcast(Intent("com.vpn.client.VPN_CONNECTED").apply {
+                                setPackage(packageName)
+                                putExtra("assigned_ip", config.assignedIP)
+                                putExtra("gateway", config.gateway)
+                                putExtra("dns", config.dns.joinToString(", "))
+                                putExtra("mtu", config.mtu)
+                                putExtra(
+                                    "connected_since_elapsed_ms",
+                                    live.connectedSinceElapsedMs
+                                )
+                            })
+                        }
+
+                        // On serviceScope so the loops are not children of this
+                        // (about to complete) reconnect job.
+                        serviceScope.launch { readFromServer() }
+                        serviceScope.launch { sendKeepalive() }
+
+                        Log.i(TAG, "Reconnected on attempt $attempt")
+                        return@launch
+                    } catch (e: SessionAuthException) {
+                        // The rotated token was rejected — hard stop, back to login.
+                        Log.e(TAG, "Reconnect auth failed: ${e.message}")
+                        stopVpn()
+                        notifyDisconnected("세션이 만료되어 VPN 연결이 끊어졌습니다")
+                        broadcastError(e.message, sessionAuthFailed = true)
+                        return@launch
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        Log.w(TAG, "Reconnect attempt $attempt failed: ${e.message}")
+                        try {
+                            tlsConnection?.disconnect()
+                        } catch (_: Exception) {
+                        }
+                        tlsConnection = null
+                    }
+                }
+
+                // Every attempt failed: give up, alert, stop for good.
+                Log.e(TAG, "Reconnect failed after $MAX_RECONNECT_ATTEMPTS attempts")
+                notifyDisconnected("재연결에 실패했습니다 ($MAX_RECONNECT_ATTEMPTS 회 시도)")
+                stopVpn()
+                broadcastError("재연결에 실패했습니다", sessionAuthFailed = false)
+            } finally {
+                // Covers cancellation (user stop / service destroy) as well.
+                reconnecting.set(false)
+                liveReconnectAttempt = 0
+            }
+        }
+    }
+
+    /**
+     * One reconnect attempt: fresh TLS + re-auth (rotating the session token) +
+     * config. The existing tun fd is kept when the pushed config is unchanged;
+     * otherwise the interface is rebuilt and swapped like the split-tunnel
+     * re-establish path.
+     */
+    private suspend fun reconnectOnce() {
+        val config = connectAndAuthenticate()
+
+        val previousConfig = vpnConfig
+        vpnConfig = config
+        domainMatcher = if (config.splitTunnel && config.includedDomains.isNotEmpty()) {
+            DomainMatcher(config.includedDomains)
+        } else {
+            null
+        }
+
+        if (config != previousConfig || vpnInterface == null) {
+            dynamicRoutes.clear()
+            val old = vpnInterface
+            val iface = buildVpnInterface(config)
+                ?: throw Exception("Failed to re-establish VPN interface")
+            vpnInterface = iface
+            tunInput = FileInputStream(iface.fileDescriptor)
+            tunOutput = FileOutputStream(iface.fileDescriptor)
+            old?.close()
+            Log.i(TAG, "Interface rebuilt after reconnect (config changed)")
+        }
+
+        // Same logical session: keep the original connect time.
+        val since = liveState?.connectedSinceElapsedMs ?: SystemClock.elapsedRealtime()
+        liveState = LiveState(
+            assignedIp = config.assignedIP,
+            gateway = config.gateway,
+            dns = config.dns.joinToString(", "),
+            mtu = config.mtu,
+            connectedSinceElapsedMs = since
+        )
+    }
+
+    /**
+     * Posts the "VPN 연결 끊김" alert on the high-importance channel. Only for
+     * disconnects the user did not ask for; gated on the disconnectNotify
+     * setting. Separate id from the (removed) foreground notification so it
+     * survives stopForeground.
+     */
+    private fun notifyDisconnected(reason: String?) {
+        if (!disconnectNotify || userStopped.get()) return
+
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
+            .setContentTitle("VPN 연결 끊김")
+            .setContentText(reason ?: "VPN 연결이 예기치 않게 끊어졌습니다")
+            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ERROR)
+            .build()
+
+        try {
+            getSystemService(NotificationManager::class.java)
+                .notify(ALERT_NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            // POST_NOTIFICATIONS may have been declined — survivable.
+            Log.w(TAG, "Could not post disconnect notification", e)
+        }
+    }
+
+    /** A stale "disconnected" alert makes no sense once a tunnel is up again. */
+    private fun cancelDisconnectAlert() {
+        try {
+            getSystemService(NotificationManager::class.java).cancel(ALERT_NOTIFICATION_ID)
+        } catch (_: Exception) {
+        }
     }
 
     private fun createNotificationChannel() {
@@ -649,8 +979,20 @@ class MyVpnService : VpnService() {
                 setShowBadge(false)
             }
 
+            // Unlike the silent ongoing channel above, an unexpected disconnect
+            // must actually get the user's attention (heads-up + sound per the
+            // user's system settings).
+            val alertChannel = NotificationChannel(
+                ALERT_CHANNEL_ID,
+                "VPN Alerts",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Alerts when the VPN disconnects unexpectedly"
+            }
+
             val notificationManager = getSystemService(NotificationManager::class.java)
             notificationManager.createNotificationChannel(channel)
+            notificationManager.createNotificationChannel(alertChannel)
         }
     }
 

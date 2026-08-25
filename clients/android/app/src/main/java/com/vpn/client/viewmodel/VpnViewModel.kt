@@ -21,6 +21,7 @@ enum class VpnConnectionState {
     DISCONNECTED,
     CONNECTING,
     CONNECTED,
+    RECONNECTING,
     ERROR
 }
 
@@ -83,6 +84,13 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     private val _autoReconnect = MutableStateFlow(true)
     val autoReconnect: StateFlow<Boolean> = _autoReconnect.asStateFlow()
 
+    private val _disconnectNotify = MutableStateFlow(true)
+    val disconnectNotify: StateFlow<Boolean> = _disconnectNotify.asStateFlow()
+
+    // Current auto-reconnect attempt (1-based) while RECONNECTING; 0 otherwise.
+    private val _reconnectAttempt = MutableStateFlow(0)
+    val reconnectAttempt: StateFlow<Int> = _reconnectAttempt.asStateFlow()
+
     private val _killSwitch = MutableStateFlow(false)
     val killSwitch: StateFlow<Boolean> = _killSwitch.asStateFlow()
 
@@ -125,6 +133,10 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        // Connection settings live independently of the login session.
+        _autoReconnect.value = prefs.getBoolean("auto_reconnect", true)
+        _disconnectNotify.value = prefs.getBoolean("disconnect_notify", true)
+
         // Restore a previous session on launch.
         if (prefs.getBoolean("logged_in", false)) {
             _authMode.value = prefs.getString("auth_mode", AUTH_MODE_PASSWORD) ?: AUTH_MODE_PASSWORD
@@ -264,7 +276,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         _sessionToken.value = ""
         _displayName.value = ""
         _connectionState.value = VpnConnectionState.DISCONNECTED
-        prefs.edit().clear().apply()
+        clearSessionPrefs()
         stopDurationTimer()
         resetConnectionStats()
         _loginError.value = "SSO 세션이 만료되었습니다. Google로 다시 로그인해 주세요."
@@ -355,7 +367,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
             _displayName.value = ""
             _authMode.value = AUTH_MODE_PASSWORD
             _connectionState.value = VpnConnectionState.DISCONNECTED
-            prefs.edit().clear().apply()
+            clearSessionPrefs()
             stopDurationTimer()
         }
     }
@@ -379,6 +391,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         connectedSinceElapsedMs: Long = 0L
     ) {
         _connectionState.value = VpnConnectionState.CONNECTED
+        _reconnectAttempt.value = 0
         _assignedIp.value = assignedIp
         _gateway.value = gateway
         _dnsServers.value = dns
@@ -393,12 +406,24 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onVpnDisconnected() {
         _connectionState.value = VpnConnectionState.DISCONNECTED
+        _reconnectAttempt.value = 0
         stopDurationTimer()
         resetConnectionStats()
     }
 
+    /**
+     * The service lost the connection and is retrying in the background
+     * (attempt/[maxAttempts] of its backoff schedule). The session is still
+     * logically alive, so the duration timer keeps running.
+     */
+    fun onVpnReconnecting(attempt: Int) {
+        _connectionState.value = VpnConnectionState.RECONNECTING
+        _reconnectAttempt.value = attempt
+    }
+
     fun onVpnError(error: String) {
         _connectionState.value = VpnConnectionState.ERROR
+        _reconnectAttempt.value = 0
         _loginError.value = error
         stopDurationTimer()
     }
@@ -418,8 +443,27 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         _serverPort.value = port
     }
 
+    /**
+     * The freshest session token for starting the VPN. The service rotates the
+     * token in SharedPreferences on every (re)authentication, so the in-memory
+     * value can be stale within a long-lived app process — prefer the store.
+     */
+    fun latestSessionToken(): String {
+        val stored = prefs.getString("session_token", null)
+        if (!stored.isNullOrEmpty()) {
+            _sessionToken.value = stored
+        }
+        return _sessionToken.value
+    }
+
     fun setAutoReconnect(enabled: Boolean) {
         _autoReconnect.value = enabled
+        prefs.edit().putBoolean("auto_reconnect", enabled).apply()
+    }
+
+    fun setDisconnectNotify(enabled: Boolean) {
+        _disconnectNotify.value = enabled
+        prefs.edit().putBoolean("disconnect_notify", enabled).apply()
     }
 
     fun setKillSwitch(enabled: Boolean) {
@@ -428,6 +472,20 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setSplitTunneling(enabled: Boolean) {
         _splitTunneling.value = enabled
+    }
+
+    /**
+     * Wipes the stored session but keeps device-level connection settings
+     * (auto-reconnect / disconnect alerts) across logouts.
+     */
+    private fun clearSessionPrefs() {
+        val autoReconnect = _autoReconnect.value
+        val disconnectNotify = _disconnectNotify.value
+        prefs.edit()
+            .clear()
+            .putBoolean("auto_reconnect", autoReconnect)
+            .putBoolean("disconnect_notify", disconnectNotify)
+            .apply()
     }
 
     private fun startDurationTimer() {

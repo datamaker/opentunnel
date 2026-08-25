@@ -35,6 +35,8 @@ public partial class SettingsView : UserControl
 
             StartWithWindowsCheckBox.IsChecked = settings.StartWithWindows;
             AutoConnectCheckBox.IsChecked = settings.AutoConnect;
+            AutoReconnectCheckBox.IsChecked = settings.AutoReconnect;
+            DisconnectNotifyCheckBox.IsChecked = settings.DisconnectNotify;
             MinimizeToTrayCheckBox.IsChecked = settings.MinimizeToTray;
             KillSwitchCheckBox.IsChecked = settings.KillSwitch;
             MtuSlider.Value = settings.MtuSize;
@@ -60,6 +62,8 @@ public partial class SettingsView : UserControl
 
             settings.StartWithWindows = StartWithWindowsCheckBox.IsChecked ?? false;
             settings.AutoConnect = AutoConnectCheckBox.IsChecked ?? false;
+            settings.AutoReconnect = AutoReconnectCheckBox.IsChecked ?? true;
+            settings.DisconnectNotify = DisconnectNotifyCheckBox.IsChecked ?? true;
             settings.MinimizeToTray = MinimizeToTrayCheckBox.IsChecked ?? false;
             settings.KillSwitch = KillSwitchCheckBox.IsChecked ?? false;
             settings.MtuSize = (int)MtuSlider.Value;
@@ -124,6 +128,8 @@ public partial class SettingsView : UserControl
     {
         StartWithWindowsCheckBox.IsChecked = false;
         AutoConnectCheckBox.IsChecked = false;
+        AutoReconnectCheckBox.IsChecked = true;
+        DisconnectNotifyCheckBox.IsChecked = true;
         MinimizeToTrayCheckBox.IsChecked = true;
         KillSwitchCheckBox.IsChecked = false;
         MtuSlider.Value = 1400;

@@ -131,6 +131,36 @@ internal sealed partial class Settings : global::System.Configuration.Applicatio
     [global::System.Configuration.UserScopedSettingAttribute()]
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
     [global::System.Configuration.DefaultSettingValueAttribute("True")]
+    public bool AutoReconnect
+    {
+        get
+        {
+            return ((bool)(this["AutoReconnect"]));
+        }
+        set
+        {
+            this["AutoReconnect"] = value;
+        }
+    }
+
+    [global::System.Configuration.UserScopedSettingAttribute()]
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+    [global::System.Configuration.DefaultSettingValueAttribute("True")]
+    public bool DisconnectNotify
+    {
+        get
+        {
+            return ((bool)(this["DisconnectNotify"]));
+        }
+        set
+        {
+            this["DisconnectNotify"] = value;
+        }
+    }
+
+    [global::System.Configuration.UserScopedSettingAttribute()]
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+    [global::System.Configuration.DefaultSettingValueAttribute("True")]
     public bool MinimizeToTray
     {
         get

@@ -130,14 +130,23 @@ public partial class MainView : UserControl
         Dispatcher.Invoke(() =>
         {
             _isConnecting = false;
+            _logger.LogError(e.Exception, "VPN Error: {Message}", e.Message);
+
+            // Unexpected disconnects (server closed / dead peer) and failed
+            // auto-reconnect attempts are announced via the tray balloon and
+            // the retry loop — a modal dialog would pile up ten times over a
+            // reconnect cycle, or pop while the window is hidden in the tray.
+            if (e.IsUnexpectedDisconnect || _viewModel.IsReconnecting)
+            {
+                return;
+            }
+
             ApplyStatusColor("ErrorColor");
             StatusIcon.Text = "✕"; // x mark
             StatusTitle.Text = "Error";
             StatusDescription.Text = e.Message;
 
             MessageBox.Show(e.Message, "VPN Error", MessageBoxButton.OK, MessageBoxImage.Error);
-
-            _logger.LogError(e.Exception, "VPN Error: {Message}", e.Message);
         });
     }
 
@@ -199,6 +208,10 @@ public partial class MainView : UserControl
             return;
         }
 
+        // A manual connect supersedes any pending auto-retry, and future drops
+        // of this new session count as unexpected again.
+        _viewModel.NotifyUserInitiatedConnect();
+
         _isConnecting = true;
         ConnectButton.IsEnabled = false;
 
@@ -250,6 +263,9 @@ public partial class MainView : UserControl
 
     private async Task DisconnectAsync()
     {
+        // This disconnect is user-intended: no drop notification, no auto-reconnect.
+        _viewModel.NotifyUserRequestedDisconnect();
+
         try
         {
             await _vpnTunnel.DisconnectAsync();
@@ -357,6 +373,10 @@ public partial class MainView : UserControl
         _statsTimer.Stop();
         _vpnTunnel.ConnectionStateChanged -= VpnTunnel_ConnectionStateChanged;
         _vpnTunnel.ErrorOccurred -= VpnTunnel_ErrorOccurred;
+
+        // The app is exiting: treat the teardown as intentional so no
+        // disconnect balloon or reconnect attempt fires during shutdown.
+        _viewModel.NotifyUserRequestedDisconnect();
 
         if (_isConnected)
         {
