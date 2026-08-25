@@ -5,7 +5,10 @@
 //! `opentunnel renew` rotates the 30-day session token forever without a human.
 
 mod device_flow;
+#[cfg(target_os = "macos")]
+mod ne;
 mod store;
+mod tunnel;
 mod vpn;
 
 use clap::{Parser, Subcommand};
@@ -59,6 +62,17 @@ enum Command {
     Token,
     /// 저장된 세션 삭제
     Logout,
+    /// VPN 연결 (macOS: OpenTunnel.app NE 터널 기동 / Linux: 스탠드얼론 tun 터널, 루트 필요)
+    Connect {
+        /// (Linux 전용) VPN 서버 재정의 (기본: 저장된 서버)
+        #[arg(long)]
+        server: Option<String>,
+        /// (Linux 전용) tun 인터페이스 이름
+        #[arg(long, default_value = "opentun0")]
+        ifname: String,
+    },
+    /// VPN 연결 해제 (macOS: NE 터널 중지)
+    Disconnect,
 }
 
 #[tokio::main]
@@ -79,6 +93,8 @@ async fn main() -> ExitCode {
         Command::Status { check } => status(check).await,
         Command::Token => token(),
         Command::Logout => logout(),
+        Command::Connect { server, ifname } => connect(server.as_deref(), &ifname).await,
+        Command::Disconnect => disconnect().await,
     };
 
     match result {
@@ -143,6 +159,13 @@ async fn renew(server_override: Option<&str>) -> Result<(), String> {
 }
 
 async fn status(check: bool) -> Result<(), String> {
+    // macOS: show the OpenTunnel.app NetworkExtension state when present —
+    // independent of the CLI's own session file.
+    #[cfg(target_os = "macos")]
+    if let Some((service_id, state)) = ne::current_state() {
+        println!("NE 터널:  {state} ({service_id})");
+    }
+
     let Some(session) = store::load()? else {
         println!("저장된 세션이 없습니다. `opentunnel login`을 실행하세요.");
         return Err("세션 없음".to_string());
@@ -205,8 +228,44 @@ fn logout() -> Result<(), String> {
     Ok(())
 }
 
+/// VPN connect: macOS drives the app's NetworkExtension (no root, uses the
+/// token the APP stored — separate from the CLI's session.json); Linux runs a
+/// standalone tun tunnel with the CLI's session token (root required).
+async fn connect(_server: Option<&str>, _ifname: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if _server.is_some() {
+            println!("(macOS에서는 --server가 무시됩니다 — NE 설정의 서버를 사용)");
+        }
+        ne::connect().await
+    }
+    #[cfg(target_os = "linux")]
+    {
+        tunnel::run(_server, _ifname).await
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        Err("connect는 macOS/Linux에서만 지원됩니다".to_string())
+    }
+}
+
+async fn disconnect() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        ne::disconnect().await
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Err("Linux에서는 connect가 포그라운드로 동작합니다 — 실행 중인 프로세스에 SIGINT/SIGTERM을 보내세요 (systemd: systemctl stop)".to_string())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        Err("disconnect는 macOS에서만 지원됩니다".to_string())
+    }
+}
+
 /// Build the session file from a freshly-minted token and save it (0600).
-fn persist(
+pub(crate) fn persist(
     server: &str,
     issuer: &str,
     email: Option<String>,

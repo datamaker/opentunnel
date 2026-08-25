@@ -96,10 +96,12 @@ Or build from source: `cd clients/cli && cargo build --release` (binary at
 ```bash
 opentunnel login            # device flow: prints a URL, human approves once in a browser
 opentunnel renew            # rotate the session token (no human needed, new 30-day TTL)
-opentunnel status           # local view: user, server, expiry, time remaining
+opentunnel status           # local view: user, server, expiry, time remaining (+ NE state on macOS)
 opentunnel status --check   # also verifies against the server (rotates the token)
 opentunnel token            # print the raw session JWT for scripts (exit 1 if expired)
 opentunnel logout           # delete the stored session
+opentunnel connect          # bring the VPN up (see platform notes below)
+opentunnel disconnect       # bring the VPN down (macOS)
 ```
 
 Defaults: issuer `https://auth.datasee.co.kr`, client-id `opentunnel`, server
@@ -124,6 +126,62 @@ opentunnel renew || echo "session lost — a human must run: opentunnel login"
 Non-zero exit codes signal that re-login is required, so agents can detect and
 escalate. `opentunnel token` hands the current session JWT to other tooling
 (e.g. a client connecting with `authType: "session"`).
+
+### `connect` / `disconnect`
+
+**macOS** — drives the installed OpenTunnel.app NetworkExtension tunnel via
+`scutil --nc` (no root). Requirements: the app is installed and has connected
+at least once (that registers the NE service and stores a session token in the
+NE configuration). `connect` starts the tunnel, waits for `Connected` (up to
+30s), then smoke-tests internal-network reachability (TCP 11.0.1.21:443) and
+exits 0 only when both pass. `disconnect` stops it.
+
+> **Token caveat (macOS):** the NE tunnel authenticates with the token the
+> *app* stored on its last connect — this is separate from the CLI's
+> `session.json`, and `opentunnel renew` does not refresh it. Because the
+> server rotates the NE token on every successful connect, any machine where
+> the app has logged in once keeps working indefinitely as long as it connects
+> at least monthly. If `connect` fails right after `Connecting`, open the app,
+> log in once, and retry.
+
+**Linux (headless servers)** — standalone foreground tunnel over
+`/dev/net/tun`, using the CLI's own session token (`sudo` required):
+
+```bash
+sudo opentunnel connect              # foreground; Ctrl-C / SIGTERM disconnects cleanly
+sudo opentunnel connect --ifname vpn0 --server vpn.datasee.co.kr:1194
+```
+
+It authenticates with `authType: "session"` (the rotated token is saved back),
+applies the server-pushed address/MTU, and routes only the pushed
+split-tunnel CIDRs (full-tunnel config uses the `0.0.0.0/1` + `128.0.0.0/1`
+pair plus a pinned host route to the VPN server). Notes: DNS servers pushed by
+the server are printed but `/etc/resolv.conf` is **not** modified, and
+domain-based split-tunnel entries are not routed (CIDR routes only) — for
+headless use, prefer IP CIDR rules. Daemonize with systemd:
+
+```ini
+# /etc/systemd/system/opentunnel.service
+[Unit]
+Description=OpenTunnel VPN client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/opentunnel connect
+Restart=on-failure
+RestartSec=10
+# session.json lives in root's home when run by systemd:
+Environment=HOME=/root
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`systemctl stop opentunnel` sends SIGTERM, which triggers a clean DISCONNECT
+handshake and route cleanup. (`opentunnel disconnect` is macOS-only — on Linux
+the foreground process owns the tunnel.)
 
 ## Common Features
 
