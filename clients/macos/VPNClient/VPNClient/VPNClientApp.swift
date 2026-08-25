@@ -22,11 +22,24 @@ struct VPNClientApp: App {
     @StateObject private var session = AppSession.shared
 
     var body: some Scene {
+        #if os(macOS)
+        // A single `Window`, not a `WindowGroup`: a WindowGroup opens a new
+        // window whenever the app is activated by an incoming opentunnel:// URL,
+        // so a CLI-driven connect spawned a second window. A single-instance
+        // Window scene can't duplicate; deep links are routed through the
+        // AppDelegate (see below), which reuses this window.
+        Window("OpenTunnel", id: "main") {
+            RootView()
+                .environmentObject(session)
+        }
+        .windowResizability(.contentSize)
+        #else
         WindowGroup {
             RootView()
                 .environmentObject(session)
         }
         .windowResizability(.contentSize)
+        #endif
     }
 }
 
