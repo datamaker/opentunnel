@@ -244,9 +244,13 @@ final class AppSession: ObservableObject {
 
         serverHost = host
         serverPort = port
-        // A session JWT usually still carries the email claim; fall back to a
-        // generic label when it does not.
-        username = DeviceFlowService.email(fromIdToken: token) ?? "Datasee SSO"
+        // The VPN server's session JWT has no `email` claim, but for SSO users
+        // its `username` claim is the email (server JIT-provisions
+        // username = email). Prefer email, fall back to username, then a
+        // generic label — so the app shows the real identity, not "Datasee SSO".
+        username = DeviceFlowService.email(fromIdToken: token)
+            ?? DeviceFlowService.stringClaim("username", fromToken: token)
+            ?? "Datasee SSO"
         password = ""
         authMethod = .sso
         ssoIdToken = nil

@@ -41,5 +41,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // banners are shown even while the app is frontmost.
         NotificationService.shared.activate()
     }
+
+    /// CLI -> GUI handoff on macOS. We route deep links through the AppDelegate
+    /// rather than SwiftUI's `.onOpenURL`, because with a `WindowGroup` every
+    /// incoming URL spawns a *new* window (scene) — opening opentunnel:// twice
+    /// left two OpenTunnel windows. This delegate method is also called on cold
+    /// start (app launched by the URL), so it covers that case too. We reuse the
+    /// existing window instead of creating one.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        Task { @MainActor in
+            for url in urls {
+                AppSession.shared.handleDeepLink(url)
+            }
+            // Bring the existing window forward instead of opening a new one.
+            NSApp.activate(ignoringOtherApps: true)
+            NSApp.windows.first { $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
+        }
+    }
 }
 #endif

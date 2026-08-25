@@ -19,13 +19,16 @@ struct RootView: View {
             }
         }
         .modifier(RootSizing())
-        // CLI -> GUI handoff. SwiftUI delivers both warm-app and cold-start
-        // launch URLs here (the App lifecycle buffers the launch URL and there
-        // is no AppDelegate URL method intercepting it), so opening
-        // opentunnel://session?... logs the app in and connects.
+        // CLI -> GUI handoff. iOS uses SwiftUI's `.onOpenURL` (a single-scene
+        // WindowGroup, so no new-window problem). macOS routes deep links
+        // through the AppDelegate instead (see VPNClientApp) — with a
+        // WindowGroup, `.onOpenURL` spawns a new window per URL. Both paths call
+        // the same AppSession.handleDeepLink, whose 2s de-dupe keeps them safe.
+        #if !os(macOS)
         .onOpenURL { url in
             session.handleDeepLink(url)
         }
+        #endif
         // If a session was already restored at launch, honor the
         // "Auto-connect at app launch" setting. A just-completed login connects
         // via AppSession instead, so this only covers app restart.

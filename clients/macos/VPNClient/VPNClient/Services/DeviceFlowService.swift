@@ -150,17 +150,28 @@ final class DeviceFlowService {
 
     /// Best-effort read of the `email` claim from an id_token (JWT), for display.
     static func email(fromIdToken idToken: String) -> String? {
-        let parts = idToken.split(separator: ".")
+        stringClaim("email", fromToken: idToken)
+    }
+
+    /// Best-effort read of a string claim from a JWT payload (unverified — for
+    /// display only). Used to label the signed-in user. The VPN server's own
+    /// session JWT carries no `email` claim, but for SSO users its `username`
+    /// claim is the email (the server JIT-provisions username = email), so a
+    /// caller can fall back to `username` to show the real identity.
+    static func stringClaim(_ name: String, fromToken token: String) -> String? {
+        let parts = token.split(separator: ".")
         guard parts.count >= 2 else { return nil }
         var payload = String(parts[1])
             .replacingOccurrences(of: "-", with: "+")
             .replacingOccurrences(of: "_", with: "/")
         while payload.count % 4 != 0 { payload += "=" }
         guard let data = Data(base64Encoded: payload),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let value = json[name] as? String,
+              !value.isEmpty else {
             return nil
         }
-        return json["email"] as? String
+        return value
     }
 
     // MARK: - Helpers
