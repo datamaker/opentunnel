@@ -163,6 +163,29 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Bring the window back from the tray: show it, un-minimize, and pull it to
+    /// the foreground. Safe to call from any thread — it marshals onto the UI
+    /// thread itself. This is the single restore path shared by the tray "Open"
+    /// menu (<see cref="Services.TrayIconManager"/>) and the single-instance
+    /// activation signal (a second launch surfaces the running window).
+    /// </summary>
+    public void RestoreFromTray()
+    {
+        Dispatcher.Invoke(() =>
+        {
+            Show();
+            if (WindowState == WindowState.Minimized)
+            {
+                WindowState = WindowState.Normal;
+            }
+            Activate();
+            // Nudge to the foreground without staying pinned on top.
+            Topmost = true;
+            Topmost = false;
+        });
+    }
+
+    /// <summary>
     /// Closing the window hides it to the tray instead of quitting, so the VPN
     /// keeps running in the background (like OpenVPN). The app only truly exits
     /// when the user picks "Exit" from the tray menu.

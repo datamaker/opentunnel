@@ -6,7 +6,6 @@ using VPNClient.ViewModels;
 using Forms = System.Windows.Forms;
 using WpfApplication = System.Windows.Application;
 using WpfWindow = System.Windows.Window;
-using WindowState = System.Windows.WindowState;
 
 namespace VPNClient.Services;
 
@@ -161,18 +160,12 @@ public sealed class TrayIconManager : IDisposable
 
     private void ShowWindow()
     {
-        _window.Dispatcher.Invoke(() =>
+        // Reuse the window's canonical restore path (also used by the
+        // single-instance activation signal) instead of duplicating it here.
+        if (_window is MainWindow main)
         {
-            _window.Show();
-            if (_window.WindowState == WindowState.Minimized)
-            {
-                _window.WindowState = WindowState.Normal;
-            }
-            _window.Activate();
-            // Nudge to the foreground without staying pinned on top.
-            _window.Topmost = true;
-            _window.Topmost = false;
-        });
+            main.RestoreFromTray();
+        }
     }
 
     private void ExitApp()
