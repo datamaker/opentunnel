@@ -20,12 +20,16 @@
   <style>
     .modal { display: none; }
     .modal.active { display: flex; }
+    /* Tables live in .overflow-x-auto wrappers: keep cells on one line and let
+       the wrapper scroll. The audit detail column opts back out (break-all). */
+    .overflow-x-auto th, .overflow-x-auto td { white-space: nowrap; }
+    .overflow-x-auto td.break-all { white-space: normal; min-width: 14rem; }
   </style>
 </head>
 <body class="bg-gray-100 min-h-screen">
   <!-- Login Screen -->
-  <div id="loginScreen" class="min-h-screen flex items-center justify-center">
-    <div class="bg-white p-8 rounded-lg shadow-lg w-96">
+  <div id="loginScreen" class="min-h-screen flex items-center justify-center p-4">
+    <div class="bg-white p-6 sm:p-8 rounded-lg shadow-lg w-full max-w-sm">
       <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">VPN Admin</h1>
       <form id="loginForm">
         <div class="mb-4">
@@ -55,14 +59,14 @@
   <!-- Dashboard -->
   <div id="dashboard" class="hidden">
     <!-- Header -->
-    <header class="bg-dark text-white py-4 px-6 flex justify-between items-center">
-      <h1 class="text-xl font-bold">VPN Server Admin</h1>
-      <button onclick="logout()" class="text-gray-300 hover:text-white">로그아웃</button>
+    <header class="bg-dark text-white py-4 px-4 sm:px-6 flex justify-between items-center">
+      <h1 class="text-lg sm:text-xl font-bold">VPN Server Admin</h1>
+      <button onclick="logout()" class="text-gray-300 hover:text-white shrink-0">로그아웃</button>
     </header>
 
     <!-- Stats -->
-    <div class="p-6">
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+    <div class="p-4 sm:p-6">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 mb-6">
         <div class="bg-white p-4 rounded-lg shadow">
           <div class="text-gray-500 text-sm">전체 사용자</div>
           <div id="statTotalUsers" class="text-2xl font-bold text-gray-800">-</div>
@@ -82,29 +86,29 @@
       </div>
 
       <!-- Tabs -->
-      <div class="flex border-b mb-4">
+      <div class="flex flex-nowrap overflow-x-auto whitespace-nowrap border-b mb-4">
         <button onclick="showTab('users')" id="tabUsers"
-                class="px-4 py-2 border-b-2 border-primary text-primary font-medium">
+                class="shrink-0 px-4 py-2 border-b-2 border-primary text-primary font-medium">
           사용자 관리
         </button>
         <button onclick="showTab('sessions')" id="tabSessions"
-                class="px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+                class="shrink-0 px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
           활성 세션
         </button>
         <button onclick="showTab('logs')" id="tabLogs"
-                class="px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+                class="shrink-0 px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
           연결 로그
         </button>
         <button onclick="showTab('split')" id="tabSplit"
-                class="px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+                class="shrink-0 px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
           스플릿 터널
         </button>
         <button onclick="showTab('settings')" id="tabSettings"
-                class="px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+                class="shrink-0 px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
           설정
         </button>
         <button onclick="showTab('audit')" id="tabAudit"
-                class="px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+                class="shrink-0 px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
           변경 이력
         </button>
       </div>
@@ -118,6 +122,7 @@
             + 사용자 추가
           </button>
         </div>
+        <div class="overflow-x-auto">
         <table class="w-full">
           <thead class="bg-gray-50">
             <tr>
@@ -133,12 +138,14 @@
           </tbody>
         </table>
       </div>
+      </div>
 
       <!-- Sessions Tab -->
       <div id="panelSessions" class="bg-white rounded-lg shadow hidden">
         <div class="p-4 border-b">
           <h2 class="text-lg font-semibold">활성 세션</h2>
         </div>
+        <div class="overflow-x-auto">
         <table class="w-full">
           <thead class="bg-gray-50">
             <tr>
@@ -154,12 +161,14 @@
           </tbody>
         </table>
       </div>
+      </div>
 
       <!-- Logs Tab -->
       <div id="panelLogs" class="bg-white rounded-lg shadow hidden">
         <div class="p-4 border-b">
           <h2 class="text-lg font-semibold">최근 연결 로그</h2>
         </div>
+        <div class="overflow-x-auto">
         <table class="w-full">
           <thead class="bg-gray-50">
             <tr>
@@ -173,6 +182,7 @@
             <!-- Logs will be loaded here -->
           </tbody>
         </table>
+      </div>
       </div>
 
       <!-- Split Tunnel Tab -->
@@ -244,6 +254,7 @@
         <div class="bg-white rounded-lg shadow p-6">
           <h2 class="text-lg font-semibold mb-1">변경 이력</h2>
           <p class="text-gray-500 text-sm mb-4">누가 무엇을 언제 바꿨는지 최근 200건입니다.</p>
+          <div class="overflow-x-auto">
           <table class="w-full">
             <thead>
               <tr class="text-left text-sm text-gray-500 border-b">
@@ -254,13 +265,14 @@
             <tbody id="auditTable"></tbody>
           </table>
         </div>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- Add User Modal -->
   <div id="addUserModal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center z-50">
-    <div class="bg-white rounded-lg w-96 p-6">
+    <div class="bg-white rounded-lg w-full max-w-sm mx-4 p-6 max-h-[90vh] overflow-y-auto">
       <h3 class="text-lg font-semibold mb-4">새 사용자 추가</h3>
       <form id="addUserForm">
         <div class="mb-4">
@@ -294,7 +306,7 @@
 
   <!-- Edit User Modal -->
   <div id="editUserModal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center z-50">
-    <div class="bg-white rounded-lg w-96 p-6">
+    <div class="bg-white rounded-lg w-full max-w-sm mx-4 p-6 max-h-[90vh] overflow-y-auto">
       <h3 class="text-lg font-semibold mb-4">사용자 수정</h3>
       <form id="editUserForm">
         <input type="hidden" id="editUserId">
@@ -446,9 +458,10 @@
                 }
               }
             });
+            const gisHost = document.getElementById('googleSignIn');
             google.accounts.id.renderButton(
-              document.getElementById('googleSignIn'),
-              { theme: 'outline', size: 'large', width: 320 }
+              gisHost,
+              { theme: 'outline', size: 'large', width: Math.min(320, gisHost.clientWidth || 320) }
             );
           };
           document.head.appendChild(gis);
@@ -859,13 +872,6 @@
       } catch (err) {
         alert('세션 종료 실패');
       }
-    }
-
-    // Utility
-    function escapeHtml(str) {
-      const div = document.createElement('div');
-      div.textContent = str;
-      return div.innerHTML;
     }
 
     // Init
