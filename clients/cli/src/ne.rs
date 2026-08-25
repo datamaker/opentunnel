@@ -119,40 +119,32 @@ async fn smoke_test() -> Result<(), String> {
     Err(format!("{last_error} ({ATTEMPTS}회 시도)"))
 }
 
-pub async fn connect() -> Result<(), String> {
-    let service_id = find_service()?;
-    let state = service_state(&service_id)?;
-    println!("NE 서비스: {service_id} (현재: {state})");
-
-    if state != "Connected" {
-        println!("VPN 시작 중... (scutil --nc start)");
-        scutil(&["--nc", "start", &service_id])?;
-
-        // Poll until Connected. A "Disconnected" right after start is normal;
-        // only treat it as a rejection once we have seen "Connecting" first
-        // (that transition means the server refused the NE-stored token).
-        let mut seen_connecting = false;
-        let deadline = tokio::time::Instant::now() + CONNECT_WAIT;
-        loop {
-            tokio::time::sleep(POLL_INTERVAL).await;
-            let state = service_state(&service_id)?;
-            match state.as_str() {
-                "Connected" => break,
-                "Connecting" => seen_connecting = true,
-                "Disconnected" if seen_connecting => return Err(TOKEN_EXPIRED_HINT.to_string()),
-                _ => {}
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(format!(
-                    "{}초 내에 연결되지 않았습니다 (마지막 상태: {state}).\n{TOKEN_EXPIRED_HINT}",
-                    CONNECT_WAIT.as_secs()
-                ));
-            }
+/// Poll `scutil --nc status` until the tunnel reports Connected (up to 30s).
+/// A `Disconnected` seen only after `Connecting` means the server refused the
+/// NE-stored token — reported as such.
+async fn poll_connected(service_id: &str) -> Result<(), String> {
+    let mut seen_connecting = false;
+    let deadline = tokio::time::Instant::now() + CONNECT_WAIT;
+    loop {
+        tokio::time::sleep(POLL_INTERVAL).await;
+        let state = service_state(service_id)?;
+        match state.as_str() {
+            "Connected" => return Ok(()),
+            "Connecting" => seen_connecting = true,
+            "Disconnected" if seen_connecting => return Err(TOKEN_EXPIRED_HINT.to_string()),
+            _ => {}
         }
-    } else {
-        println!("이미 연결되어 있습니다.");
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "{}초 내에 연결되지 않았습니다 (마지막 상태: {state}).\n{TOKEN_EXPIRED_HINT}",
+                CONNECT_WAIT.as_secs()
+            ));
+        }
     }
+}
 
+/// Internal-network smoke test with success/failure reporting.
+async fn report_smoke() -> Result<(), String> {
     print!("내부망 도달성 확인 중 ({SMOKE_TARGET})... ");
     match smoke_test().await {
         Ok(()) => {
@@ -168,6 +160,34 @@ pub async fn connect() -> Result<(), String> {
             ))
         }
     }
+}
+
+/// After the GUI app has been asked (via deep link) to log in and connect,
+/// wait for the NE tunnel to reach Connected and smoke-test reachability.
+/// Requires the app to be installed (its NE service registered).
+pub async fn wait_connected_and_smoke() -> Result<(), String> {
+    let service_id = find_service()?;
+    println!("앱이 연결을 수행하는 동안 NE 상태를 폴링합니다...");
+    poll_connected(&service_id).await?;
+    report_smoke().await
+}
+
+/// Direct control path (`--no-app`, or fallback): start the NE tunnel with
+/// `scutil` ourselves. This does NOT update the GUI app's UI.
+pub async fn connect_direct() -> Result<(), String> {
+    let service_id = find_service()?;
+    let state = service_state(&service_id)?;
+    println!("NE 서비스: {service_id} (현재: {state})");
+
+    if state != "Connected" {
+        println!("VPN 시작 중... (scutil --nc start)");
+        scutil(&["--nc", "start", &service_id])?;
+        poll_connected(&service_id).await?;
+    } else {
+        println!("이미 연결되어 있습니다.");
+    }
+
+    report_smoke().await
 }
 
 pub async fn disconnect() -> Result<(), String> {

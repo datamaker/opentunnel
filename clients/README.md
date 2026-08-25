@@ -100,7 +100,7 @@ opentunnel status           # local view: user, server, expiry, time remaining (
 opentunnel status --check   # also verifies against the server (rotates the token)
 opentunnel token            # print the raw session JWT for scripts (exit 1 if expired)
 opentunnel logout           # delete the stored session
-opentunnel connect          # bring the VPN up (see platform notes below)
+opentunnel connect          # bring the VPN up (macOS delegates to the app by default; --no-app for direct)
 opentunnel disconnect       # bring the VPN down (macOS)
 ```
 
@@ -129,20 +129,44 @@ escalate. `opentunnel token` hands the current session JWT to other tooling
 
 ### `connect` / `disconnect`
 
-**macOS** — drives the installed OpenTunnel.app NetworkExtension tunnel via
-`scutil --nc` (no root). Requirements: the app is installed and has connected
-at least once (that registers the NE service and stores a session token in the
-NE configuration). `connect` starts the tunnel, waits for `Connected` (up to
-30s), then smoke-tests internal-network reachability (TCP 11.0.1.21:443) and
-exits 0 only when both pass. `disconnect` stops it.
+**macOS — app delegation (default).** On macOS, `login` and `connect` delegate
+to the OpenTunnel GUI app by default, so CLI-driven state **is reflected in the
+app's UI**. The CLI hands its session token to the app through a custom URL
+scheme:
 
-> **Token caveat (macOS):** the NE tunnel authenticates with the token the
-> *app* stored on its last connect — this is separate from the CLI's
-> `session.json`, and `opentunnel renew` does not refresh it. Because the
-> server rotates the NE token on every successful connect, any machine where
-> the app has logged in once keeps working indefinitely as long as it connects
-> at least monthly. If `connect` fails right after `Connecting`, open the app,
-> log in once, and retry.
+```
+opentunnel://session?token=<urlencoded JWT>&server=<host>&port=<port>&connect=<0|1>
+```
+
+- `opentunnel login` — after a successful device-flow login, fires the deep
+  link with `connect=0` so the app also shows logged-in (login only, no
+  connect). Suppress with `--no-app`.
+- `opentunnel connect` — fires the deep link with `connect=1` using the token
+  from `session.json`; the app performs the login **and** connect (GUI
+  updates). The CLI then polls the NetworkExtension state until `Connected`
+  (up to 30s) and smoke-tests internal-network reachability (TCP
+  11.0.1.21:443), exiting 0 only when both pass. If the app is not installed,
+  or `open` finds no scheme handler, the CLI prints a one-line warning and
+  falls back to controlling the tunnel directly via `scutil --nc` (which does
+  **not** update the app UI). `--no-app` forces the direct `scutil` path.
+- `opentunnel disconnect` — stops the NE tunnel via `scutil --nc`.
+
+> **Requires a deep-link-aware app build.** The delegation only actually does
+> something on the new (deep-link-supporting) TestFlight build. On an older
+> app build, `open` still succeeds but the app ignores the URL — so use
+> `--no-app` (direct `scutil`) with older app builds. The direct path requires
+> the app to have connected at least once (that registers the NE service and
+> stores a token in the NE configuration).
+
+> **Token caveats (macOS):**
+> - The direct `scutil` path uses the token the *app* stored on its last
+>   connect — separate from the CLI's `session.json`, and `opentunnel renew`
+>   does not refresh it. The server rotates that NE token on every connect, so
+>   a machine where the app has logged in once keeps working as long as it
+>   connects at least monthly. If `connect` fails right after `Connecting`,
+>   open the app, log in once, and retry.
+> - The deep-link path passes the CLI's `session.json` token to the app, which
+>   keeps the two in sync; the server rotates it on the resulting connect.
 
 **Linux (headless servers)** — standalone foreground tunnel over
 `/dev/net/tun`, using the CLI's own session token (`sudo` required):

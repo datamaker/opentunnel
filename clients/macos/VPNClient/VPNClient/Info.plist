@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Custom URL scheme for CLI -> GUI handoff. The CLI opens
+	     opentunnel://session?token=...&server=...&port=...&connect=1 to hand the
+	     GUI the server-issued 30-day SSO session token so the app reflects the
+	     logged-in / connected state. See DeepLinkHandler. The rest of the app's
+	     Info.plist keys are generated (GENERATE_INFOPLIST_FILE=YES) and merged
+	     on top of this file at build time. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLName</key>
+			<string>kr.co.datasee.VPNClient.opentunnel</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>opentunnel</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

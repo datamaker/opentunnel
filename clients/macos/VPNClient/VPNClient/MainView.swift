@@ -18,19 +18,49 @@ struct MainView: View {
     @State private var showingLogout = false
     @State private var currentTime = Date()
 
+    // Size classes drive a compact layout on small screens so the
+    // Disconnect / Cancel button stays in view without scrolling. Both are
+    // .regular on macOS, so the desktop window keeps its roomy spacing.
+    @Environment(\.horizontalSizeClass) private var hSizeClass
+    @Environment(\.verticalSizeClass) private var vSizeClass
+
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    // MARK: - Adaptive sizing
+    /// Compact on an iPhone (compact width) or any short screen (landscape).
+    /// Always false on macOS and iPad (both regular).
+    private var isCompactLayout: Bool {
+        hSizeClass == .compact || vSizeClass == .compact
+    }
+    /// Extra-tight: a short viewport (landscape phone) where vertical room is
+    /// the real constraint.
+    private var isShortViewport: Bool { vSizeClass == .compact }
+
+    private var statusCircleOuter: CGFloat { isShortViewport ? 72 : (isCompactLayout ? 96 : 120) }
+    private var statusCircleMid: CGFloat { isShortViewport ? 54 : (isCompactLayout ? 72 : 90) }
+    private var statusCircleInner: CGFloat { isShortViewport ? 38 : (isCompactLayout ? 50 : 60) }
+    private var statusCardVerticalPadding: CGFloat { isShortViewport ? 12 : (isCompactLayout ? 20 : 32) }
+    private var cardStackSpacing: CGFloat { isCompactLayout ? 14 : 24 }
+    private var statusCardInnerSpacing: CGFloat { isCompactLayout ? 10 : 16 }
+    private var statusIconFont: Font { isShortViewport ? .title3 : (isCompactLayout ? .title2 : .title) }
+    private var progressScale: CGFloat { isCompactLayout ? 1.0 : 1.2 }
 
     var body: some View {
         VStack(spacing: 0) {
             headerSection
 
             ScrollView {
-                VStack(spacing: 24) {
+                VStack(spacing: cardStackSpacing) {
                     connectionStatusCard
 
                     if isConnected {
                         serverInfoCard
-                        statisticsCard
+                        // The statistics card is the most expendable block on a
+                        // small screen — drop it in a short viewport so the
+                        // Disconnect button stays above the fold.
+                        if !isShortViewport {
+                            statisticsCard
+                        }
                     }
 
                     connectionButton
@@ -101,27 +131,27 @@ struct MainView: View {
 
     // MARK: - Connection Status Card
     private var connectionStatusCard: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: statusCardInnerSpacing) {
             ZStack {
                 Circle()
                     .fill(statusColor.opacity(0.2))
-                    .frame(width: 120, height: 120)
+                    .frame(width: statusCircleOuter, height: statusCircleOuter)
 
                 Circle()
                     .fill(statusColor.opacity(0.4))
-                    .frame(width: 90, height: 90)
+                    .frame(width: statusCircleMid, height: statusCircleMid)
 
                 Circle()
                     .fill(statusColor)
-                    .frame(width: 60, height: 60)
+                    .frame(width: statusCircleInner, height: statusCircleInner)
 
                 if isConnecting || isDisconnecting || isReconnecting {
                     ProgressView()
                         .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                        .scaleEffect(1.2)
+                        .scaleEffect(progressScale)
                 } else {
                     Image(systemName: statusIcon)
-                        .font(.title)
+                        .font(statusIconFont)
                         .foregroundColor(.white)
                 }
             }
@@ -132,14 +162,18 @@ struct MainView: View {
                     .font(.title3)
                     .fontWeight(.semibold)
 
-                Text(statusDescription)
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
+                // The description is a nice-to-have; hide it in a short
+                // viewport to reclaim vertical space for the button.
+                if !isShortViewport {
+                    Text(statusDescription)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 32)
+        .padding(.vertical, statusCardVerticalPadding)
         .background(Color.cardBackground)
         .cornerRadius(16)
         .shadow(color: .black.opacity(0.05), radius: 10, x: 0, y: 4)

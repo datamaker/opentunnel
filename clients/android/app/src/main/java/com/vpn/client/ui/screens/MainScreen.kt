@@ -70,12 +70,17 @@ fun MainScreen(
         )
 
         // ---- Scrollable content ----
+        // Takes only the space left above the pinned action bar (weight(1f)) and
+        // scrolls internally if the status/details cards overflow. This keeps
+        // the Connect/Disconnect button on screen without scrolling even on
+        // short viewports (~640dp).
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .weight(1f)
+                .fillMaxWidth()
                 .verticalScroll(scrollState)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             ConnectionStatusCard(connectionState = connectionState)
 
@@ -94,14 +99,19 @@ fun MainScreen(
                     bytesSent = bytesSent
                 )
             }
+        }
 
+        // ---- Pinned action bar (always visible) ----
+        Surface(
+            color = MaterialTheme.colorScheme.background,
+            tonalElevation = 0.dp
+        ) {
             ConnectionButton(
                 connectionState = connectionState,
                 onConnectClick = onConnectClick,
-                onDisconnectClick = onDisconnectClick
+                onDisconnectClick = onDisconnectClick,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
             )
-
-            Spacer(modifier = Modifier.height(8.dp))
         }
     }
 }
@@ -190,38 +200,39 @@ private fun ConnectionStatusCard(connectionState: VpnConnectionState) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 32.dp, horizontal = 16.dp),
+                .padding(vertical = 20.dp, horizontal = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Concentric circles with centered status indicator
-            val outerSize by animateDpAsState(targetValue = 120.dp, animationSpec = tween(300), label = "outer")
+            // Concentric circles with centered status indicator. Kept compact so
+            // the pinned action button stays on screen without scrolling.
+            val outerSize by animateDpAsState(targetValue = 88.dp, animationSpec = tween(300), label = "outer")
             Box(
                 modifier = Modifier.size(outerSize),
                 contentAlignment = Alignment.Center
             ) {
                 Box(
                     modifier = Modifier
-                        .size(120.dp)
+                        .size(88.dp)
                         .clip(CircleShape)
                         .background(statusColor.copy(alpha = 0.2f))
                 )
                 Box(
                     modifier = Modifier
-                        .size(90.dp)
+                        .size(66.dp)
                         .clip(CircleShape)
                         .background(statusColor.copy(alpha = 0.4f))
                 )
                 Box(
                     modifier = Modifier
-                        .size(60.dp)
+                        .size(44.dp)
                         .clip(CircleShape)
                         .background(statusColor),
                     contentAlignment = Alignment.Center
                 ) {
                     if (isConnecting) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(28.dp),
+                            modifier = Modifier.size(22.dp),
                             color = Color.White,
                             strokeWidth = 2.5.dp
                         )
@@ -230,7 +241,7 @@ private fun ConnectionStatusCard(connectionState: VpnConnectionState) {
                             imageVector = statusIcon,
                             contentDescription = null,
                             tint = Color.White,
-                            modifier = Modifier.size(28.dp)
+                            modifier = Modifier.size(22.dp)
                         )
                     }
                 }
@@ -242,7 +253,7 @@ private fun ConnectionStatusCard(connectionState: VpnConnectionState) {
             ) {
                 Text(
                     text = statusTitle,
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
@@ -278,18 +289,18 @@ private fun ConnectionDetailsCard(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
             Divider()
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             DetailRow(title = "Server", value = serverAddress)
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(8.dp))
             DetailRow(title = "Assigned IP", value = assignedIp)
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(8.dp))
             DetailRow(title = "Gateway", value = gateway)
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(8.dp))
             DetailRow(title = "DNS", value = dns)
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(8.dp))
             DetailRow(title = "MTU", value = mtu)
         }
     }
@@ -347,9 +358,9 @@ private fun StatisticsCard(
                 )
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
             Divider()
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             Row(modifier = Modifier.fillMaxWidth()) {
                 StatisticItem(
@@ -407,7 +418,8 @@ private fun StatisticItem(
 private fun ConnectionButton(
     connectionState: VpnConnectionState,
     onConnectClick: () -> Unit,
-    onDisconnectClick: () -> Unit
+    onDisconnectClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     // RECONNECTING acts like CONNECTED here: red button, Stop icon, tap stops.
     val isConnected = connectionState == VpnConnectionState.CONNECTED ||
@@ -441,7 +453,7 @@ private fun ConnectionButton(
                 VpnConnectionState.CONNECTING -> { /* disabled */ }
             }
         },
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(56.dp)
             .then(backgroundModifier),

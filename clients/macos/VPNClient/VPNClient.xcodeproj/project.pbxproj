@@ -56,11 +56,21 @@
 			);
 			target = 71F142A32F3C34E9001AF470 /* PacketTunnel */;
 		};
+		71F142E12F3C4306001AF470 /* Exceptions for "VPNClient" folder in "VPNClient" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 71F142912F3C3463001AF470 /* VPNClient */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		71F142942F3C3463001AF470 /* VPNClient */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				71F142E12F3C4306001AF470 /* Exceptions for "VPNClient" folder in "VPNClient" target */,
+			);
 			path = VPNClient;
 			sourceTree = "<group>";
 		};
@@ -393,6 +403,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = VPNClient/Info.plist;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
@@ -445,6 +456,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = VPNClient/Info.plist;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;

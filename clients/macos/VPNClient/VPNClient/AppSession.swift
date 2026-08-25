@@ -107,6 +107,11 @@ final class AppSession: ObservableObject {
 
     private let defaults = UserDefaults.standard
 
+    /// De-dupes deep links that may be delivered more than once (e.g. SwiftUI
+    /// onOpenURL plus an AppKit fallback), so the same token is not applied and
+    /// connected twice in quick succession.
+    private var lastHandledDeepLink: (url: String, at: Date)?
+
     init() {
         // Restore a previous session so the user stays logged in across app
         // restarts.
@@ -166,6 +171,8 @@ final class AppSession: ObservableObject {
         defaults.set(remember, forKey: "vpn_logged_in")
 
         isLoggedIn = true
+        // Fresh login → connect right away (consistent with the SSO paths).
+        VPNManager.shared.autoConnectAfterLogin()
     }
 
     /// Marks the session as logged in via Datasee SSO (device flow). The
@@ -190,6 +197,70 @@ final class AppSession: ObservableObject {
         defaults.set(true, forKey: "vpn_logged_in")
 
         isLoggedIn = true
+        // Fresh login → connect right away (see MainView/StatusItemController).
+        VPNManager.shared.autoConnectAfterLogin()
+    }
+
+    // MARK: - CLI deep-link handoff
+
+    /// Handles an `opentunnel://` deep link from the CLI. Applies a valid
+    /// session-token link (Keychain + logged-in state) exactly like an in-app
+    /// SSO login, then connects. Returns true when the link was applied.
+    /// Invalid or empty-token links are ignored (and logged).
+    @discardableResult
+    func handleDeepLink(_ url: URL) -> Bool {
+        // Drop a duplicate delivery of the same URL within a short window.
+        if let last = lastHandledDeepLink,
+           last.url == url.absoluteString,
+           Date().timeIntervalSince(last.at) < 2 {
+            return false
+        }
+
+        guard let link = DeepLinkHandler.parse(url) else {
+            // Never log the raw URL — it carries the session token. Log scheme/host only.
+            print("⚠️ Ignoring invalid deep link (scheme=\(url.scheme ?? "nil"), host=\(url.host ?? "nil"))")
+            return false
+        }
+        lastHandledDeepLink = (url.absoluteString, Date())
+
+        signInWithSessionToken(host: link.server, port: link.port, token: link.token)
+
+        // The CLI's `connect=1` asks for an immediate connect. Even without it a
+        // fresh login means "logged in → connect" (consistent with the in-app
+        // SSO path), so we auto-connect either way; the flag is honored as the
+        // common case and left in the contract for future divergence.
+        VPNManager.shared.autoConnectAfterLogin()
+        return true
+    }
+
+    /// Logs in using a server-issued SSO **session token** handed over by the
+    /// CLI (no device flow) — the same end state as an in-app SSO login. The
+    /// token goes straight to the Keychain; no plaintext copy is written to
+    /// UserDefaults. Returns false for an empty token.
+    @discardableResult
+    func signInWithSessionToken(host: String, port: String, token: String) -> Bool {
+        let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return false }
+
+        serverHost = host
+        serverPort = port
+        // A session JWT usually still carries the email claim; fall back to a
+        // generic label when it does not.
+        username = DeviceFlowService.email(fromIdToken: token) ?? "Datasee SSO"
+        password = ""
+        authMethod = .sso
+        ssoIdToken = nil
+        ssoSessionToken = token
+        CredentialStore.saveSSOSessionToken(token)   // token lives only in the Keychain
+
+        defaults.set(AuthMethod.sso.rawValue, forKey: "vpn_auth_method")
+        defaults.set(host, forKey: "vpn_server_address")
+        defaults.set(port, forKey: "vpn_server_port")
+        defaults.set(username, forKey: "vpn_username")
+        defaults.set(true, forKey: "vpn_logged_in")
+
+        isLoggedIn = true
+        return true
     }
 
     /// The credential VPNManager should send in SSO mode: the stored session

@@ -23,6 +23,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -33,6 +34,7 @@ import com.vpn.client.ui.screens.SettingsScreen
 import com.vpn.client.ui.theme.VpnClientTheme
 import com.vpn.client.viewmodel.VpnConnectionState
 import com.vpn.client.viewmodel.VpnViewModel
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -102,10 +104,26 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) { /* Declined is survivable: the tunnel still works, just silently. */ }
 
+    // "Connect automatically once logged in": guards the startup auto-connect
+    // to fire at most once per process so returning to the foreground after a
+    // manual disconnect does not silently reconnect. (This is distinct from the
+    // service's auto-reconnect, which handles a *dropped* live tunnel.)
+    private var didStartupAutoConnect = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         requestNotificationPermissionIfNeeded()
+
+        // Auto-connect the moment a login (password or SSO device flow) succeeds
+        // — the user should not have to also tap Connect. The VpnService consent
+        // dialog still appears the first time; approving it continues into the
+        // connection via the existing permission launcher.
+        lifecycleScope.launch {
+            vpnViewModel.loginSuccess.collect {
+                maybeAutoConnect()
+            }
+        }
 
         setContent {
             VpnClientTheme {
@@ -195,6 +213,33 @@ class MainActivity : ComponentActivity() {
         // happened in the meantime is picked up here rather than leaving the UI
         // showing stale state (or Disconnected over a live tunnel).
         syncWithService()
+
+        // Auto-connect on app start if a session is already restored and no
+        // tunnel is up. Once per process (see didStartupAutoConnect): a manual
+        // disconnect followed by returning to the foreground must not silently
+        // reconnect.
+        if (!didStartupAutoConnect) {
+            didStartupAutoConnect = true
+            maybeAutoConnect()
+        }
+    }
+
+    /**
+     * Starts the VPN without an explicit Connect tap, but only when it makes
+     * sense: the user is logged in and nothing is already up or in progress.
+     * The state guard makes this safe to call from both the login-success path
+     * and the app-start path without risking a duplicate start.
+     */
+    private fun maybeAutoConnect() {
+        if (!vpnViewModel.isLoggedIn.value) return
+        // A live service means a tunnel is already up (or reconnecting).
+        if (MyVpnService.liveState != null) return
+        when (vpnViewModel.connectionState.value) {
+            VpnConnectionState.CONNECTING,
+            VpnConnectionState.CONNECTED,
+            VpnConnectionState.RECONNECTING -> return
+            else -> requestVpnPermissionAndConnect()
+        }
     }
 
     override fun onStop() {

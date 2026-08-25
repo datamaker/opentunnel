@@ -40,7 +40,9 @@ public partial class MainWindow : Window
 
         // Stay signed in across restarts: if we have a saved SSO session or
         // saved credentials, restore the session and go straight to the Main
-        // screen (the user still taps Connect). Otherwise show the login screen.
+        // screen. Otherwise show the login screen.
+        var restoredSession = false;
+
         if (CredentialStore.LoadSsoSession() is { } sso)
         {
             // SSO session: no password stored — reconnects authenticate with
@@ -52,6 +54,7 @@ public partial class MainWindow : Window
             _viewModel.ServerPort = sso.Port;
             _viewModel.IsAuthenticated = true;
             ShowMain();
+            restoredSession = true;
         }
         else if (CredentialStore.Load() is { } cred)
         {
@@ -62,13 +65,67 @@ public partial class MainWindow : Window
             _viewModel.ServerPort = cred.Port;
             _viewModel.IsAuthenticated = true;
             ShowMain();
+            restoredSession = true;
         }
         else
         {
             ShowLogin();
         }
 
+        // On restart with a remembered session, auto-connect only if the user
+        // opted into it (AutoConnect toggle). A fresh login always auto-connects
+        // — see OnLoginSuccessful — regardless of that toggle.
+        if (restoredSession && IsAutoConnectOnStartupEnabled())
+        {
+            TriggerAutoConnect();
+        }
+
         _logger.LogInformation("MainWindow initialized");
+    }
+
+    /// <summary>The "Auto-connect on startup" setting, defaulting to false if it
+    /// can't be read.</summary>
+    private static bool IsAutoConnectOnStartupEnabled()
+    {
+        try
+        {
+            return Properties.Settings.Default.AutoConnect;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Kick off a connection without waiting for the user to press Connect.
+    /// Routes through the shared <see cref="MainViewModel.ConnectCommand"/>
+    /// (same path as the tray "Connect"), which guards against connecting when
+    /// already connected/connecting and re-arms unexpected-drop detection.
+    /// </summary>
+    private void TriggerAutoConnect()
+    {
+        if (_viewModel.IsConnected || _viewModel.IsConnecting)
+        {
+            return;
+        }
+
+        if (_viewModel.ConnectCommand.CanExecute(null))
+        {
+            _logger.LogInformation("Auto-connecting VPN");
+            _viewModel.ConnectCommand.Execute(null);
+        }
+    }
+
+    /// <summary>
+    /// A login (password or SSO) just succeeded: show the Main screen and
+    /// connect immediately. Always auto-connects — the AutoConnect setting
+    /// governs only the connect-on-restart behavior, not a fresh sign-in.
+    /// </summary>
+    private void OnLoginSuccessful()
+    {
+        ShowMain();
+        TriggerAutoConnect();
     }
 
     private void ShowLogin()
@@ -76,7 +133,7 @@ public partial class MainWindow : Window
         if (_loginView == null)
         {
             _loginView = new LoginView();
-            _loginView.LoginSuccessful += (_, _) => ShowMain();
+            _loginView.LoginSuccessful += (_, _) => OnLoginSuccessful();
         }
 
         RootContent.Content = _loginView;

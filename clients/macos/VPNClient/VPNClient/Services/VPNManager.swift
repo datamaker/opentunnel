@@ -52,6 +52,12 @@ class VPNManager: ObservableObject {
 
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
+    /// The initial manager load; auto-connect awaits it so it never races the
+    /// async setup and fails with "manager not initialized".
+    private var loadTask: Task<Void, Never>?
+    /// Guards the launch auto-connect so it runs at most once per app launch
+    /// (a SwiftUI `.task` can fire more than once).
+    private var didAttemptLaunchAutoConnect = false
 
     // MARK: - Disconnect / Auto-reconnect State
 
@@ -83,8 +89,8 @@ class VPNManager: ObservableObject {
     static let shared = VPNManager()
 
     private init() {
-        Task {
-            await loadManager()
+        loadTask = Task { [weak self] in
+            await self?.loadManager()
         }
     }
 
@@ -265,8 +271,50 @@ class VPNManager: ObservableObject {
         }
     }
 
+    // MARK: - Auto-connect
+
+    /// Connect right after a successful login (in-app SSO, password, or a CLI
+    /// deep link). Always attempts — a fresh login means the user wants to be
+    /// online. No-ops if a session is already up / in flight.
+    func autoConnectAfterLogin() {
+        Task { await performAutoConnect() }
+    }
+
+    /// Connect at app launch when a session was restored *and* the user enabled
+    /// "Auto-connect at app launch" (vpn_auto_connect). Runs at most once per
+    /// launch. This is the only auto-connect path gated by that toggle — a
+    /// fresh login always connects regardless.
+    func autoConnectOnLaunchIfEnabled() {
+        guard !didAttemptLaunchAutoConnect else { return }
+        didAttemptLaunchAutoConnect = true
+        guard UserDefaults.standard.bool(forKey: "vpn_auto_connect") else { return }
+        Task { await performAutoConnect() }
+    }
+
+    private func performAutoConnect() async {
+        await loadTask?.value
+        guard AppSession.shared.isLoggedIn else { return }
+        // Don't fight an established/in-flight session or the reconnect loop.
+        if reconnectTask != nil { return }
+        switch manager?.connection.status {
+        case .connected, .connecting, .reasserting:
+            return
+        default:
+            break
+        }
+        do {
+            try await connectUsingCurrentSession()
+        } catch {
+            // Missing credentials / save-start errors surface via errorMessage;
+            // an auto-connect failure must not crash or loop.
+        }
+    }
+
     private func connect(providerConfiguration: [String: Any]) async throws {
         print("🔵 Connect called")
+
+        // Ensure the async manager load has finished before we touch it.
+        await loadTask?.value
 
         guard let manager = manager else {
             print("❌ Manager is nil!")
