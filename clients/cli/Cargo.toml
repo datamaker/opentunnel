@@ -1,0 +1,38 @@
+[package]
+name = "opentunnel-cli"
+version = "0.1.0"
+edition = "2021"
+description = "OpenTunnel SSO CLI — headless login/renew of VPN session tokens (for AI agents and scripts)"
+license = "MIT"
+
+[[bin]]
+name = "opentunnel"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+# Pin the `ring` crypto provider to avoid the aws-lc-rs C/cmake build (same as server-rust).
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "0.26"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+base64 = "0.22"
+
+# Transitive-dependency pin for older stable rustc (1.80): idna_adapter >= 1.2
+# switches `url` -> `idna` over to the icu4x crates, whose MSRV is newer.
+# 1.1.0 keeps the unicode-rs backend and behaves identically for our use.
+idna_adapter = "=1.1.0"
+
+# NOTE: Cargo.lock additionally holds back a few transitive crates
+# (reqwest 0.12.9, quinn*, zeroize, clap 4.5.40, hyper-rustls 0.27.3) so the
+# crate still builds on rustc/cargo 1.80 (Homebrew). Newer toolchains build
+# the lock as-is; avoid a blanket `cargo update` unless everyone is on >=1.85.
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

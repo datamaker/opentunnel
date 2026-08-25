@@ -106,8 +106,38 @@ jobs:
 
   # macOS build skipped - use TestFlight for distribution
 
+  build-cli:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: opentunnel-cli-linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: opentunnel-cli-macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build CLI
+        working-directory: clients/cli
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename binary
+        run: cp clients/cli/target/${{ matrix.target }}/release/opentunnel ${{ matrix.asset }}
+
+      - name: Upload CLI binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
   create-release:
-    needs: [build-android, build-windows]
+    needs: [build-android, build-windows, build-cli]
     runs-on: ubuntu-latest
     # Tag push, or a manual dispatch with an explicit version (the release
     # action then creates the v<version> tag itself at the dispatched ref).
@@ -125,6 +155,8 @@ jobs:
           files: |
             artifacts/android-apk/*
             artifacts/windows-installer/*
+            artifacts/opentunnel-cli-linux-x86_64/*
+            artifacts/opentunnel-cli-macos-arm64/*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
