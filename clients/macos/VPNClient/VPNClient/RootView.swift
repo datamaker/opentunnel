@@ -35,8 +35,27 @@ struct RootView: View {
         .task {
             VPNManager.shared.autoConnectOnLaunchIfEnabled()
         }
+        // Capture SwiftUI's openWindow action for AppKit callers (menu-bar
+        // item, deep links): the window can be closed while the app stays in
+        // the menu bar, and only SwiftUI can reliably reopen a Window scene.
+        #if os(macOS)
+        .background(MainWindowOpenerBridge())
+        #endif
     }
 }
+
+#if os(macOS)
+private struct MainWindowOpenerBridge: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear
+            .onAppear {
+                MainWindowOpener.openWindowAction = { openWindow(id: "main") }
+            }
+    }
+}
+#endif
 
 /// macOS gets a fixed phone-sized window (matching the mobile clients; iPhone
 /// 12 Pro is 390×844 pt) — windowResizability(.contentSize) makes the window

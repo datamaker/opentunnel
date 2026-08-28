@@ -110,6 +110,15 @@ class VPNManager: ObservableObject {
 
             if let existingManager = managers.first {
                 self.manager = existingManager
+                // Adopting an already-running tunnel (app launched while the
+                // tunnel is up — e.g. CLI-started, or the app was quit without
+                // disconnecting): show its real server. Without this the UI
+                // falls back to the "localhost:1194" default until the next
+                // in-app connect overwrites it.
+                if let address = existingManager.protocolConfiguration?.serverAddress,
+                   !address.isEmpty {
+                    self.serverAddress = address
+                }
                 print("✅ Using existing manager")
             } else {
                 self.manager = NETunnelProviderManager()
@@ -333,7 +342,12 @@ class VPNManager: ObservableObject {
         tunnelProtocol.providerConfiguration = providerConfiguration
 
         manager.protocolConfiguration = tunnelProtocol
-        manager.localizedDescription = "VPN Client"
+        // Debug builds carry a CFBundleDisplayName ("OpenTunnel Dev") so their
+        // separate NE configuration is distinguishable in System Settings; the
+        // release build has none and keeps the original name.
+        manager.localizedDescription =
+            (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? "VPN Client"
         manager.isEnabled = true
 
         // Save configuration

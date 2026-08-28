@@ -127,10 +127,7 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func openWindowTapped() {
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        NSApplication.shared.windows
-            .first { $0.canBecomeMain }?
-            .makeKeyAndOrderFront(nil)
+        MainWindowOpener.show()
     }
 
     @objc private func quitTapped() {

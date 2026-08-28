@@ -33,6 +33,11 @@ struct VPNClientApp: App {
                 .environmentObject(session)
         }
         .windowResizability(.contentSize)
+        // Always present the window on a fresh launch. Without this, state
+        // restoration replays the "window closed" state from the previous run
+        // (the app now keeps running in the menu bar after X), so launching
+        // the app appeared to do nothing.
+        .defaultLaunchBehavior(.presented)
         #else
         WindowGroup {
             RootView()
@@ -55,6 +60,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationService.shared.activate()
     }
 
+    /// Closing the window (X / Cmd+W) keeps the app alive in the menu bar —
+    /// parity with the Windows tray client. Quitting is explicit: Cmd+Q or the
+    /// menu-bar "Quit OpenTunnel".
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    /// Quitting must not leave the NE tunnel running headless (the extension
+    /// is a separate process, so it survives the app otherwise). Stop the
+    /// tunnel first, then finish terminating once it reports disconnected
+    /// (bounded at 5 s so a stuck teardown can never block Quit).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let vpn = VPNManager.shared
+        switch vpn.status {
+        case .disconnected, .invalid:
+            return .terminateNow
+        default:
+            break
+        }
+        vpn.disconnect()
+        Task { @MainActor in
+            for _ in 0..<50 where VPNManager.shared.status != .disconnected {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     /// CLI -> GUI handoff on macOS. We route deep links through the AppDelegate
     /// rather than SwiftUI's `.onOpenURL`, because with a `WindowGroup` every
     /// incoming URL spawns a *new* window (scene) — opening opentunnel:// twice
@@ -66,9 +100,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for url in urls {
                 AppSession.shared.handleDeepLink(url)
             }
-            // Bring the existing window forward instead of opening a new one.
-            NSApp.activate(ignoringOtherApps: true)
-            NSApp.windows.first { $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
+            MainWindowOpener.show()
+        }
+    }
+}
+
+/// Re-shows the main window from AppKit contexts (the menu-bar item, deep
+/// links) — needed because the window can now be closed while the app keeps
+/// running. Prefers the still-alive NSWindow; falls back to SwiftUI's
+/// `openWindow` action (captured by RootView) if the scene tore it down.
+@MainActor
+enum MainWindowOpener {
+    /// Set by RootView's bridge on first appearance; opens the "main" Window.
+    static var openWindowAction: (() -> Void)?
+
+    static func show() {
+        NSApp.activate(ignoringOtherApps: true)
+        if let window = NSApp.windows.first(where: { $0.canBecomeMain }) {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            openWindowAction?()
         }
     }
 }
