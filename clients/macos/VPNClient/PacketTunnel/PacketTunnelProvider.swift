@@ -24,6 +24,11 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private var tunnelConfig: ConfigPush?
     private var domainMatcher: DomainMatcher?
     private var dynamicRoutes: Set<String> = []
+    /// DNS answers held back until the settings apply covering their learned
+    /// routes is active (see maybeLearnRoute / kickRouteReapply). Main queue.
+    private var pendingSplitPackets: [(packet: Data, proto: NSNumber)] = []
+    /// True while a coalesced setTunnelNetworkSettings re-apply is in flight.
+    private var reapplyInFlight = false
 
     // Keepalive / liveness. Without a periodic keepalive the server drops an
     // idle connection after ~120s; this also gives dead-peer detection. Matches
@@ -96,6 +101,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         logger.info("Stopping tunnel: \(String(describing: reason))")
         isRunning = false
         stopKeepalive()
+        // Held DNS answers are moot once the tunnel is going down.
+        pendingSplitPackets.removeAll()
         // Best-effort: tell the server we're leaving so it releases the session
         // promptly (parity with the Android/Windows clients).
         sendMessage(Disconnect())
@@ -553,10 +560,37 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let added = dns.addresses.filter { dynamicRoutes.insert($0).inserted }
         if added.isEmpty { return false }
         logger.info("Split tunnel: learned \(added.count) route(s) for \(dns.qname)")
-        reapplyRoutes { [weak self] in
-            self?.packetFlow.writePackets([packet], withProtocols: [proto])
-        }
+        pendingSplitPackets.append((packet, proto))
+        kickRouteReapply()
         return true
+    }
+
+    /// Coalesced settings re-apply: at most ONE setTunnelNetworkSettings in
+    /// flight; answers arriving meanwhile are batched into the next apply.
+    ///
+    /// Each apply costs the system a few hundred ms (utun reconfigure + NWI
+    /// settle) and applies are processed serially in nesessionmanager — the
+    /// previous per-DNS-answer applies built a backlog during active browsing
+    /// that a user's Disconnect then had to wait out (observed live: the stop
+    /// command reached the provider 8-10 s after the click).
+    private func kickRouteReapply() {
+        guard !reapplyInFlight else { return } // completion re-kicks
+        guard isRunning, !pendingSplitPackets.isEmpty else { return }
+        let batch = pendingSplitPackets
+        pendingSplitPackets.removeAll()
+        reapplyInFlight = true
+        reapplyRoutes { [weak self] in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                // This apply covers every route learned before it started —
+                // release the DNS answers that were held for those routes.
+                for entry in batch {
+                    self.packetFlow.writePackets([entry.packet], withProtocols: [entry.proto])
+                }
+                self.reapplyInFlight = false
+                self.kickRouteReapply()
+            }
+        }
     }
 
     // MARK: - Packet Handling

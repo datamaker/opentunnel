@@ -168,6 +168,12 @@ class MyVpnService : VpnService() {
     private val dynamicRoutes = java.util.Collections.synchronizedSet(HashSet<String>())
     private val reestablishMutex = Mutex()
 
+    // Split-tunnel: DNS answers held back until the interface re-establish that
+    // covers their learned routes is active (see maybeLearnRoute). Both fields
+    // are guarded by the pendingSplitPackets monitor.
+    private val pendingSplitPackets = ArrayList<ByteArray>()
+    private var reapplyRunning = false
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -229,6 +235,7 @@ class MyVpnService : VpnService() {
                     null
                 }
                 dynamicRoutes.clear()
+                synchronized(pendingSplitPackets) { pendingSplitPackets.clear() }
 
                 // Build and establish VPN interface
                 val iface = buildVpnInterface(config)
@@ -315,6 +322,7 @@ class MyVpnService : VpnService() {
                 tunOutput = null
                 domainMatcher = null
                 dynamicRoutes.clear()
+                synchronized(pendingSplitPackets) { pendingSplitPackets.clear() }
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error during VPN shutdown", e)
@@ -669,9 +677,44 @@ class MyVpnService : VpnService() {
         val added = dns.addresses.filter { dynamicRoutes.add(it) }
         if (added.isEmpty()) return false
         Log.i(TAG, "Split tunnel: learned ${added.size} route(s) for ${dns.qname}: $added")
-        reestablishInterface()
-        writeToTun(packet)
+        // Coalesced re-establish: at most one in flight; answers arriving
+        // meanwhile batch into the next one. Rebuilding the interface per DNS
+        // answer queued expensive fd swaps back-to-back under active browsing
+        // (the same pathology delayed disconnect 8-10 s on macOS) and stalled
+        // this read loop for the full rebuild.
+        val shouldStart: Boolean
+        synchronized(pendingSplitPackets) {
+            pendingSplitPackets.add(packet)
+            shouldStart = !reapplyRunning
+            if (shouldStart) reapplyRunning = true
+        }
+        if (shouldStart) serviceScope.launch { drainRouteReapplies() }
         return true
+    }
+
+    /**
+     * Re-establishes the interface until no learned-route batches are pending.
+     * Each held DNS answer is delivered only after the re-establish covering
+     * its routes is active — preserving the leak gate per batch.
+     */
+    private suspend fun drainRouteReapplies() {
+        while (true) {
+            val batch: List<ByteArray> = synchronized(pendingSplitPackets) {
+                val copy = ArrayList(pendingSplitPackets)
+                pendingSplitPackets.clear()
+                copy
+            }
+            if (isRunning.get()) {
+                reestablishInterface()
+                batch.forEach { writeToTun(it) }
+            }
+            synchronized(pendingSplitPackets) {
+                if (pendingSplitPackets.isEmpty() || !isRunning.get()) {
+                    reapplyRunning = false
+                    return
+                }
+            }
+        }
     }
 
     private suspend fun sendKeepalive() = withContext(Dispatchers.IO) {
