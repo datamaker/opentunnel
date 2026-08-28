@@ -51,9 +51,16 @@ mod macos {
         std::path::Path::new(APP_PATH).exists()
     }
 
-    /// Fire the deep link at the app via `open`. `server` is `host:port`;
+    /// Fire the deep link at the app via `open -a`. `server` is `host:port`;
     /// a missing port defaults to 1194. Returns Ok(()) when `open` reported
-    /// success (a registered scheme handler exists), Err otherwise.
+    /// success, Err otherwise.
+    ///
+    /// `-a APP_PATH` targets the installed app explicitly instead of the URL
+    /// scheme's default handler: every Xcode build re-registers the DerivedData
+    /// copy as a scheme claimant (`lsregister -f -trusted`), and when
+    /// LaunchServices resolves the scheme to that stale/Debug copy the GUI
+    /// never appears (observed live — a bare `open <url>` spawned a second
+    /// instance from a different path instead of reaching the app).
     pub fn hand_off_to_app(token: &str, server: &str, connect: bool) -> Result<(), String> {
         let (host, port) = crate::vpn::split_host_port(server)?;
         let url = build_url(token, &host, port, connect);
@@ -65,6 +72,8 @@ mod macos {
         );
 
         let status = std::process::Command::new("open")
+            .arg("-a")
+            .arg(APP_PATH)
             .arg(&url)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -74,7 +83,7 @@ mod macos {
         if status.success() {
             Ok(())
         } else {
-            Err("open이 URL scheme 핸들러를 찾지 못했습니다 (앱 미설치/미등록)".to_string())
+            Err(format!("open이 {APP_PATH} 실행에 실패했습니다 (앱 손상/차단 여부 확인)"))
         }
     }
 }

@@ -200,9 +200,10 @@ async fn renew(server_override: Option<&str>) -> Result<(), String> {
 
 async fn status(check: bool) -> Result<(), String> {
     // macOS: show the OpenTunnel.app NetworkExtension state when present —
-    // independent of the CLI's own session file.
+    // independent of the CLI's own session file. More than one entry means an
+    // orphaned configuration is still registered (see ne::parse_service_ids).
     #[cfg(target_os = "macos")]
-    if let Some((service_id, state)) = ne::current_state() {
+    for (service_id, state) in ne::current_state() {
         println!("NE 터널:  {state} ({service_id})");
     }
 
