@@ -404,6 +404,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = VPNClient/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "OpenTunnel Dev";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
@@ -421,7 +422,7 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
 				MARKETING_VERSION = 1.1;
-				PRODUCT_BUNDLE_IDENTIFIER = kr.co.datasee.VPNClient;
+				PRODUCT_BUNDLE_IDENTIFIER = kr.co.datasee.VPNClient.debug;
 				PRODUCT_NAME = OpenTunnel;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				REGISTER_APP_GROUPS = YES;
@@ -516,7 +517,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
 				MARKETING_VERSION = 1.1;
-				PRODUCT_BUNDLE_IDENTIFIER = kr.co.datasee.VPNClient.PacketTunnel;
+				PRODUCT_BUNDLE_IDENTIFIER = kr.co.datasee.VPNClient.debug.PacketTunnel;
 				PRODUCT_NAME = PacketTunnel;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				REGISTER_APP_GROUPS = YES;
