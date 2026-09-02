@@ -274,6 +274,13 @@ async fn main() -> anyhow::Result<()> {
                             Ok(tls_stream) => {
                                 session::handle(tls_stream, peer.ip(), shared).await;
                             }
+                            // NLB TCP health checks open a connection and close it
+                            // without a ClientHello every 10s, which surfaces here as
+                            // an EOF. Logging that at WARN once filled the disk when a
+                            // probe burst hit; keep real handshake failures at WARN.
+                            Err(e) if e.to_string().contains("eof") => {
+                                tracing::debug!("TLS handshake failed from {peer}: {e}")
+                            }
                             Err(e) => tracing::warn!("TLS handshake failed from {peer}: {e}"),
                         }
                     });
