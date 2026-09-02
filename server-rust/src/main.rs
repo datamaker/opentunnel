@@ -285,7 +285,15 @@ async fn main() -> anyhow::Result<()> {
                         }
                     });
                 }
-                Err(e) => tracing::error!("Accept error: {e}"),
+                Err(e) => {
+                    tracing::error!("Accept error: {e}");
+                    // A persistent accept error (EMFILE fd exhaustion being the
+                    // classic case) would otherwise spin this loop hot — pegging
+                    // a core and writing error lines at tens of thousands per
+                    // second, which is the leading suspect for the 35GB log that
+                    // filled the disk on 2026-09-02. Back off before retrying.
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
             }
         }
     };
