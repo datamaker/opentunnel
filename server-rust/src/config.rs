@@ -4,6 +4,7 @@
 //! same `.env` files and Docker environment work unchanged.
 
 use std::env;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -95,6 +96,137 @@ pub struct SsoConfig {
     pub allowed_domains: Vec<String>,
 }
 
+/// Resource limits for the public VPN listener (see [`crate::limits`]).
+///
+/// Everything here bounds what a peer can make the server do *before* it has
+/// authenticated. A count/rate of 0 disables that particular limit.
+#[derive(Debug, Clone)]
+pub struct LimitsConfig {
+    /// Largest frame payload accepted before authentication
+    /// (`VPN_MAX_PREAUTH_FRAME_BYTES`). Only has to fit an auth request.
+    pub max_preauth_frame: usize,
+    /// Largest frame payload accepted after authentication
+    /// (`VPN_MAX_FRAME_BYTES`). Has to fit one tunnelled IP packet.
+    pub max_frame: usize,
+    /// Time allowed for the TLS handshake (`VPN_TLS_HANDSHAKE_TIMEOUT_SECS`).
+    pub tls_handshake_timeout: Duration,
+    /// Absolute time from TCP accept to successful authentication
+    /// (`VPN_AUTH_TIMEOUT_SECS`). Not extended by anything the peer sends.
+    pub auth_timeout: Duration,
+    /// Concurrent connections, authenticated or not (`VPN_MAX_CONNECTIONS`).
+    pub max_connections: usize,
+    /// Concurrent unauthenticated connections per source address
+    /// (`VPN_MAX_UNAUTH_PER_IP`).
+    pub max_unauth_per_ip: u32,
+    /// New connections per source per minute, with a burst of the same size
+    /// (`VPN_CONN_RATE_PER_MIN`).
+    pub conn_rate_per_min: u32,
+    /// Failed authentications per source per minute, with a burst of the same
+    /// size; while exhausted, new connections from the source are refused
+    /// (`VPN_AUTH_FAIL_PER_MIN`).
+    pub auth_fail_per_min: u32,
+    /// `auth_fail` rows written to `connection_logs` per source per minute
+    /// (`VPN_AUTH_FAIL_LOG_PER_MIN`); the rest are counted, not stored.
+    pub auth_fail_log_per_min: u32,
+    /// Sources exempt from the per-source limits (`VPN_LIMIT_EXEMPT_CIDRS`).
+    /// They still count toward `max_connections`.
+    pub exempt_cidrs: Vec<String>,
+    /// Days of `connection_logs` to keep (`CONNECTION_LOG_RETENTION_DAYS`).
+    /// 0 keeps everything.
+    pub log_retention_days: u32,
+}
+
+/// Smallest frame limits that can still work: an auth request needs room for a
+/// JWT, and the data phase needs room for one IP packet at the tunnel MTU.
+const MIN_PREAUTH_FRAME: usize = 1024;
+/// Largest IPv4 packet. Every client refuses to send or receive more than this
+/// per frame, so nothing larger is ever legitimate.
+pub const MAX_IP_PACKET: usize = 65_535;
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        LimitsConfig {
+            max_preauth_frame: 16 * 1024,
+            max_frame: MAX_IP_PACKET,
+            tls_handshake_timeout: Duration::from_secs(10),
+            auth_timeout: Duration::from_secs(15),
+            max_connections: 256,
+            max_unauth_per_ip: 32,
+            conn_rate_per_min: 120,
+            auth_fail_per_min: 30,
+            auth_fail_log_per_min: 10,
+            exempt_cidrs: Vec::new(),
+            log_retention_days: 90,
+        }
+    }
+}
+
+impl LimitsConfig {
+    fn from_env(mtu: u32) -> Self {
+        let d = LimitsConfig::default();
+        let mut limits = LimitsConfig {
+            max_preauth_frame: env_parse("VPN_MAX_PREAUTH_FRAME_BYTES", d.max_preauth_frame),
+            max_frame: env_parse("VPN_MAX_FRAME_BYTES", d.max_frame),
+            tls_handshake_timeout: Duration::from_secs(env_parse(
+                "VPN_TLS_HANDSHAKE_TIMEOUT_SECS",
+                d.tls_handshake_timeout.as_secs(),
+            )),
+            auth_timeout: Duration::from_secs(env_parse(
+                "VPN_AUTH_TIMEOUT_SECS",
+                d.auth_timeout.as_secs(),
+            )),
+            max_connections: env_parse("VPN_MAX_CONNECTIONS", d.max_connections),
+            max_unauth_per_ip: env_parse("VPN_MAX_UNAUTH_PER_IP", d.max_unauth_per_ip),
+            conn_rate_per_min: env_parse("VPN_CONN_RATE_PER_MIN", d.conn_rate_per_min),
+            auth_fail_per_min: env_parse("VPN_AUTH_FAIL_PER_MIN", d.auth_fail_per_min),
+            auth_fail_log_per_min: env_parse(
+                "VPN_AUTH_FAIL_LOG_PER_MIN",
+                d.auth_fail_log_per_min,
+            ),
+            exempt_cidrs: env_csv("VPN_LIMIT_EXEMPT_CIDRS"),
+            log_retention_days: env_parse("CONNECTION_LOG_RETENTION_DAYS", d.log_retention_days),
+        };
+        limits.sanitize(mtu);
+        limits
+    }
+
+    /// Clamp values that would break the server outright. Unlike the counts and
+    /// rates, the frame limits and timeouts cannot be switched off with 0: an
+    /// unbounded frame or an endless handshake is the hole these exist to close.
+    pub fn sanitize(&mut self, mtu: u32) {
+        let d = LimitsConfig::default();
+        if self.max_preauth_frame < MIN_PREAUTH_FRAME {
+            tracing::warn!(
+                "VPN_MAX_PREAUTH_FRAME_BYTES={} is too small for an auth request, using {}",
+                self.max_preauth_frame,
+                d.max_preauth_frame
+            );
+            self.max_preauth_frame = d.max_preauth_frame;
+        }
+        // The pre-auth limit never exceeds the IP maximum either: it exists to
+        // be the *smaller* of the two.
+        self.max_preauth_frame = self.max_preauth_frame.min(MAX_IP_PACKET);
+
+        let min_frame = (mtu as usize).max(self.max_preauth_frame);
+        if self.max_frame < min_frame {
+            tracing::warn!(
+                "VPN_MAX_FRAME_BYTES={} is below the tunnel MTU / pre-auth limit, using {}",
+                self.max_frame,
+                min_frame
+            );
+            self.max_frame = min_frame;
+        }
+        self.max_frame = self.max_frame.min(MAX_IP_PACKET);
+
+        if self.tls_handshake_timeout.is_zero() {
+            self.tls_handshake_timeout = d.tls_handshake_timeout;
+        }
+        if self.auth_timeout.is_zero() {
+            self.auth_timeout = d.auth_timeout;
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub server: ServerConfig,
@@ -103,6 +235,7 @@ pub struct Config {
     pub admin: AdminConfig,
     pub split: SplitConfig,
     pub sso: SsoConfig,
+    pub limits: LimitsConfig,
     pub jwt_secret: String,
     pub production: bool,
 }
@@ -166,7 +299,11 @@ impl Config {
                 },
                 "VPN_DNS" => self.vpn.dns = csv(value),
                 "VPN_MTU" => match value.parse() {
-                    Ok(v) => self.vpn.mtu = v,
+                    Ok(v) => {
+                        self.vpn.mtu = v;
+                        // Keep the data-phase frame limit at or above the MTU.
+                        self.limits.sanitize(v);
+                    }
                     Err(_) => tracing::warn!("settings: {key}={value:?} is not a number, keeping env"),
                 },
                 "SSO_ALLOWED_DOMAINS" => self.sso.allowed_domains = csv(value),
@@ -181,6 +318,7 @@ impl Config {
     }
 
     pub fn from_env() -> Self {
+        let mtu: u32 = env_parse("VPN_MTU", 1400);
         Config {
             server: ServerConfig {
                 // `PORT` is set by the Dockerfile; `VPN_PORT` by `.env.example`.
@@ -212,7 +350,7 @@ impl Config {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect(),
-                mtu: env_parse("VPN_MTU", 1400),
+                mtu,
             },
             admin: AdminConfig {
                 port: env_parse("ADMIN_PORT", 8080),
@@ -239,8 +377,58 @@ impl Config {
                     allowed_domains: env_csv("SSO_ALLOWED_DOMAINS"),
                 }
             },
+            limits: LimitsConfig::from_env(mtu),
             jwt_secret: env_or("JWT_SECRET", "change-this-in-production"),
             production: env_or("NODE_ENV", "development") == "production",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_limits_are_clamped_to_workable_values() {
+        let mut limits = LimitsConfig {
+            max_preauth_frame: 10,
+            max_frame: 100,
+            tls_handshake_timeout: Duration::ZERO,
+            auth_timeout: Duration::ZERO,
+            ..LimitsConfig::default()
+        };
+        limits.sanitize(1400);
+        let d = LimitsConfig::default();
+        assert_eq!(limits.max_preauth_frame, d.max_preauth_frame);
+        // Never below the pre-auth limit or the MTU.
+        assert_eq!(limits.max_frame, d.max_preauth_frame);
+        assert_eq!(limits.tls_handshake_timeout, d.tls_handshake_timeout);
+        assert_eq!(limits.auth_timeout, d.auth_timeout);
+
+        let mut jumbo = LimitsConfig {
+            max_preauth_frame: 2048,
+            max_frame: 4096,
+            ..LimitsConfig::default()
+        };
+        jumbo.sanitize(9000);
+        assert_eq!(jumbo.max_frame, 9000);
+
+        // Nothing may exceed the largest IP packet.
+        let mut huge = LimitsConfig {
+            max_preauth_frame: usize::MAX,
+            max_frame: usize::MAX,
+            ..LimitsConfig::default()
+        };
+        huge.sanitize(1400);
+        assert_eq!(huge.max_preauth_frame, MAX_IP_PACKET);
+        assert_eq!(huge.max_frame, MAX_IP_PACKET);
+    }
+
+    #[test]
+    fn defaults_survive_sanitize_unchanged() {
+        let mut limits = LimitsConfig::default();
+        limits.sanitize(1400);
+        assert_eq!(limits.max_preauth_frame, 16 * 1024);
+        assert_eq!(limits.max_frame, MAX_IP_PACKET);
     }
 }

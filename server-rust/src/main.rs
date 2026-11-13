@@ -9,6 +9,7 @@ mod auth;
 mod config;
 mod db;
 mod ippool;
+mod limits;
 mod logging;
 mod protocol;
 mod router;
@@ -106,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         config.jwt_secret.clone(),
         config.sso.session_ttl_days,
         config.sso.allowed_domains.clone(),
+        config.limits.auth_fail_log_per_min,
     ));
     let sessions = Arc::new(SessionManager::new());
 
@@ -182,7 +184,21 @@ async fn main() -> anyhow::Result<()> {
         split: split.clone(),
         sso,
         tun: tun_handle,
+        limits: limits::ConnLimiter::new(&config.limits),
     });
+    tracing::info!(
+        "Listener limits: {} connections, {} unauthenticated per source, \
+         {} connects/min and {} failed auths/min per source, \
+         frames {} bytes before auth / {} after, TLS handshake {}s, auth deadline {}s",
+        config.limits.max_connections,
+        config.limits.max_unauth_per_ip,
+        config.limits.conn_rate_per_min,
+        config.limits.auth_fail_per_min,
+        config.limits.max_preauth_frame,
+        config.limits.max_frame,
+        config.limits.tls_handshake_timeout.as_secs(),
+        config.limits.auth_timeout.as_secs(),
+    );
 
     // Admin panel.
     {
@@ -252,6 +268,26 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // connection_logs retention (hourly; the first pass runs at startup).
+    if config.limits.log_retention_days > 0 {
+        let auth = auth.clone();
+        let days = config.limits.log_retention_days;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
+            loop {
+                interval.tick().await;
+                let deleted = auth.cleanup_old_connection_logs(days).await;
+                if deleted > 0 {
+                    tracing::info!(
+                        "Deleted {deleted} connection log rows older than {days} days"
+                    );
+                }
+            }
+        });
+    } else {
+        tracing::info!("connection_logs retention disabled (CONNECTION_LOG_RETENTION_DAYS=0)");
+    }
+
     // Bind the VPN listener.
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -267,23 +303,23 @@ async fn main() -> anyhow::Result<()> {
         loop {
             match listener.accept().await {
                 Ok((stream, peer)) => {
-                    let acceptor = acceptor.clone();
-                    let shared = shared.clone();
-                    tokio::spawn(async move {
-                        match acceptor.accept(stream).await {
-                            Ok(tls_stream) => {
-                                session::handle(tls_stream, peer.ip(), shared).await;
-                            }
-                            // NLB TCP health checks open a connection and close it
-                            // without a ClientHello every 10s, which surfaces here as
-                            // an EOF. Logging that at WARN once filled the disk when a
-                            // probe burst hit; keep real handshake failures at WARN.
-                            Err(e) if e.to_string().contains("eof") => {
-                                tracing::debug!("TLS handshake failed from {peer}: {e}")
-                            }
-                            Err(e) => tracing::warn!("TLS handshake failed from {peer}: {e}"),
+                    // Admission control happens before any TLS work, so a
+                    // refused connection costs one accept() and one close().
+                    // Dropping `stream` closes the socket.
+                    let guard = match shared.limits.try_acquire(peer.ip()) {
+                        Ok(guard) => guard,
+                        Err(reason) => {
+                            shared.limits.log_reject(reason, peer.ip());
+                            continue;
                         }
-                    });
+                    };
+                    tokio::spawn(session::serve(
+                        stream,
+                        peer.ip(),
+                        acceptor.clone(),
+                        shared.clone(),
+                        guard,
+                    ));
                 }
                 Err(e) => {
                     tracing::error!("Accept error: {e}");

@@ -158,6 +158,34 @@ All settings come from environment variables (see `.env.example`). Both the
 original `VPN_PORT`/`VPN_DNS` names and the Docker `PORT`/`DNS_SERVERS` names are
 accepted for compatibility.
 
+### Listener limits
+
+The VPN port faces the internet, so everything a peer can do before it has
+authenticated is bounded. All of it is configurable; a count/rate of `0`
+disables that limit (frame sizes and timeouts cannot be disabled).
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `VPN_MAX_PREAUTH_FRAME_BYTES` | `16384` | Largest frame before authentication. Only the auth request has to fit. |
+| `VPN_MAX_FRAME_BYTES` | `65535` | Largest frame after authentication (one tunnelled IP packet). Never below `VPN_MTU`. |
+| `VPN_TLS_HANDSHAKE_TIMEOUT_SECS` | `10` | Time allowed for the TLS handshake. |
+| `VPN_AUTH_TIMEOUT_SECS` | `15` | Absolute time from TCP accept to successful authentication. Reads do not extend it. |
+| `VPN_MAX_CONNECTIONS` | `256` | Concurrent connections, authenticated or not. |
+| `VPN_MAX_UNAUTH_PER_IP` | `32` | Concurrent not-yet-authenticated connections per source. |
+| `VPN_CONN_RATE_PER_MIN` | `120` | New connections per source per minute (token bucket, burst = same value). |
+| `VPN_AUTH_FAIL_PER_MIN` | `30` | Failed logins per source per minute (token bucket); while empty, new connections from the source are refused. |
+| `VPN_LIMIT_EXEMPT_CIDRS` | empty | CIDRs exempt from the per-source limits (still counted toward `VPN_MAX_CONNECTIONS`). |
+| `VPN_AUTH_FAIL_LOG_PER_MIN` | `10` | `auth_fail` rows stored in `connection_logs` per source per minute; the rest are counted and noted on the next row. |
+| `CONNECTION_LOG_RETENTION_DAYS` | `90` | `connection_logs` rows older than this are deleted hourly. `0` keeps everything. |
+
+A frame whose length header exceeds the limit closes the connection before any
+of its body is read. A "source" is an IPv4 address or an IPv6 /64. The server
+must see real client addresses for the per-source limits to mean anything:
+behind a load balancer that needs TCP passthrough with client-IP preservation
+(a proxy that hides the client address would make every user share one source).
+Refusals and other pre-auth events are logged at most once per 10 seconds per
+kind, with a count of what was not logged.
+
 ## Status
 
 Initial port. Control plane (TLS, auth, config push, keepalive, session

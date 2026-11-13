@@ -3,6 +3,7 @@
 use crate::auth::AuthService;
 use crate::config::Config;
 use crate::ippool::IpPool;
+use crate::limits::ConnLimiter;
 use crate::session::SessionManager;
 use crate::split::SplitPolicy;
 use crate::sso::SsoVerifier;
@@ -18,4 +19,6 @@ pub struct SharedState {
     /// OIDC id_token verifier; `None` when SSO is disabled (`OIDC_ISSUER` unset).
     pub sso: Option<Arc<SsoVerifier>>,
     pub tun: TunHandle,
+    /// Connection caps and rate limits for the public listener.
+    pub limits: Arc<ConnLimiter>,
 }

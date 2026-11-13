@@ -4,6 +4,7 @@
 //! JWT for the opaque session token handed back to the client.
 
 use crate::db::DbPool;
+use crate::limits::{AuthFailLogLimiter, LogDecision};
 use crate::protocol::ClientPlatform;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,40 @@ pub struct AuthService {
     /// Emails/domains allowed to authenticate via SSO. Empty = allow all.
     /// Behind a lock because the panel can change it while clients connect.
     sso_allowed: std::sync::RwLock<Vec<String>>,
+    /// Caps how many `auth_fail` rows one source can add to `connection_logs`.
+    auth_fail_log: AuthFailLogLimiter,
+}
+
+/// bcrypt is deliberately slow (tens of milliseconds of pure CPU), so it must
+/// not run on the async workers, and it must not be allowed to occupy every
+/// core either: this host also runs the SSO and the internal tools. At most
+/// this many bcrypt operations run at once; the rest queue.
+fn bcrypt_permits() -> &'static tokio::sync::Semaphore {
+    static PERMITS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    PERMITS.get_or_init(|| {
+        let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+        tokio::sync::Semaphore::new((cores / 2).max(1))
+    })
+}
+
+/// Verify a password against a bcrypt hash on the blocking thread pool.
+/// Any error (malformed hash, e.g. the SSO sentinel) counts as a mismatch.
+pub async fn verify_password(password: String, hash: String) -> bool {
+    let Ok(_permit) = bcrypt_permits().acquire().await else {
+        return false;
+    };
+    tokio::task::spawn_blocking(move || bcrypt::verify(password, &hash).unwrap_or(false))
+        .await
+        .unwrap_or(false)
+}
+
+/// Hash a password with bcrypt on the blocking thread pool.
+pub async fn hash_password(password: String) -> Option<String> {
+    let _permit = bcrypt_permits().acquire().await.ok()?;
+    tokio::task::spawn_blocking(move || bcrypt::hash(password, bcrypt::DEFAULT_COST).ok())
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Check an email against an allowlist of emails and domains. Entries may be a
@@ -75,12 +110,14 @@ impl AuthService {
         jwt_secret: String,
         sso_session_ttl_days: i64,
         sso_allowed: Vec<String>,
+        auth_fail_log_per_min: u32,
     ) -> Self {
         AuthService {
             db,
             jwt_secret,
             sso_session_ttl_days,
             sso_allowed: std::sync::RwLock::new(sso_allowed),
+            auth_fail_log: AuthFailLogLimiter::new(auth_fail_log_per_min),
         }
     }
 
@@ -131,7 +168,7 @@ impl AuthService {
             return Err("Account is disabled".to_string());
         }
 
-        let password_valid = bcrypt::verify(password, &password_hash).unwrap_or(false);
+        let password_valid = verify_password(password.to_string(), password_hash).await;
         if !password_valid {
             self.log_event(Some(user_id), "auth_fail", platform, client_ip, Some("Wrong password"))
                 .await;
@@ -518,6 +555,25 @@ impl AuthService {
         client.execute(query.as_str(), &[]).await.unwrap_or(0) as i64
     }
 
+    /// Delete `connection_logs` rows older than `retention_days`. Returns the
+    /// number of rows removed.
+    pub async fn cleanup_old_connection_logs(&self, retention_days: u32) -> u64 {
+        let Ok(client) = self.db.get().await else {
+            return 0;
+        };
+        let query = format!(
+            "DELETE FROM connection_logs \
+             WHERE created_at < CURRENT_TIMESTAMP - INTERVAL '{retention_days} days'"
+        );
+        match client.execute(query.as_str(), &[]).await {
+            Ok(deleted) => deleted,
+            Err(e) => {
+                tracing::warn!("connection_logs retention cleanup failed: {e}");
+                0
+            }
+        }
+    }
+
     async fn log_event(
         &self,
         user_id: Option<Uuid>,
@@ -526,12 +582,28 @@ impl AuthService {
         client_ip: IpAddr,
         details: Option<&str>,
     ) {
+        // Failed logins are attacker-triggered, so the rows one source can add
+        // are capped per minute. Skipped failures are counted and reported on
+        // the first row of that source's next window.
+        let mut annotated = None;
+        if event_type == "auth_fail" {
+            match self.auth_fail_log.check(client_ip) {
+                LogDecision::Skip => return,
+                LogDecision::Write { suppressed: 0 } => {}
+                LogDecision::Write { suppressed } => {
+                    annotated = Some(format!(
+                        "{} (+{suppressed} earlier failures from this address not logged)",
+                        details.unwrap_or("auth_fail")
+                    ));
+                }
+            }
+        }
         self.log_event_raw(
             user_id,
             event_type,
             platform.as_str(),
             Some(&client_ip.to_string()),
-            details,
+            annotated.as_deref().or(details),
         )
         .await;
     }

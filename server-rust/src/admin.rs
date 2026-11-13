@@ -614,7 +614,9 @@ async fn create_user(
         ));
     }
     let max_conn = body.max_connections.unwrap_or(3);
-    let hash = bcrypt::hash(&password, bcrypt::DEFAULT_COST).map_err(|_| db_error())?;
+    let hash = crate::auth::hash_password(password.clone())
+            .await
+            .ok_or_else(db_error)?;
 
     let client = state.db.get().await.map_err(|_| db_error())?;
     let row = client
@@ -675,7 +677,9 @@ async fn update_user(
                 "Password must be at least 8 characters",
             ));
         }
-        let hash = bcrypt::hash(&password, bcrypt::DEFAULT_COST).map_err(|_| db_error())?;
+        let hash = crate::auth::hash_password(password.clone())
+            .await
+            .ok_or_else(db_error)?;
         params.push(Box::new(hash));
         set_clauses.push(format!("password_hash = ${}", params.len()));
     }
