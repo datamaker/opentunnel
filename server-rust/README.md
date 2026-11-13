@@ -58,6 +58,46 @@ from the Node.js server's later fixes are included.
   expiry, re-checks the account is active, and mints a fresh token (preserving
   the SSO marker and its longer TTL). Works without any OIDC configuration.
 
+`VPN_PASSWORD_AUTH=false` switches the `password` mode off (and refuses
+session tokens that came from a password login). It defaults to on for
+compatibility; **production should turn it off** once everyone uses SSO. A
+failed password login always answers `Invalid credentials` — unknown user,
+wrong password and disabled account are indistinguishable, including by
+timing (a dummy bcrypt verification runs when there is no usable hash).
+
+An id_token is accepted **once**, and only within
+`SSO_ID_TOKEN_MAX_AGE_SECS` (default 600) of its `iat`.
+
+#### Session lifetime and revocation
+
+- Session tokens carry `auth_time` (the real login they descend from) and
+  `iat`. Reconnecting renews the token but never moves `auth_time`; renewal is
+  refused once the login is older than `SSO_SESSION_MAX_LIFETIME_DAYS`
+  (default = `SSO_SESSION_TTL_DAYS`), so an SSO user really signs in at least
+  that often. Tokens from before these claims existed are read as issued (and
+  logged in) one TTL before their `exp`, so they keep working until they would
+  have expired.
+- `users.tokens_valid_after` voids every token issued before it. The admin
+  panel sets it — and closes the user's live tunnels through the session
+  manager — on **연결 끊기**, on deactivating a user, and on
+  **모든 기기에서 로그아웃** (`POST /api/users/:id/revoke`). Deleting a user
+  closes their tunnels too. The column is added at startup
+  (`ALTER TABLE … ADD COLUMN IF NOT EXISTS`, nullable, no default).
+- Every renewal re-checks `users.is_active`, `SSO_ALLOWED_DOMAINS` and
+  gatehouse.
+- **gatehouse** (`GATEHOUSE_STATUS_URL` + `GATEHOUSE_STATUS_SECRET`, both
+  required): SSO logins, renewals and — every `GATEHOUSE_RECHECK_SECS`
+  (default 300) — live SSO tunnels are checked against
+  `GET /internal/account?email=`. Inactive/unknown accounts and logins older
+  than `revoked_before` are refused and their tunnels closed. Answers are
+  cached for 60 s (2 s timeout); when gatehouse is unreachable the last answer
+  per account is used, and an account never looked up successfully is allowed.
+  A 404 only counts as "unknown account" when it carries the contract's
+  `{"active":false}` body, so pointing this at a gatehouse that does not serve
+  the route yet does not lock everyone out.
+- The same periodic pass closes tunnels whose user was deleted, deactivated or
+  revoked, or whose login is past the absolute lifetime.
+
 All modes then follow the same path: connection-limit check, IP allocation,
 session insert, `AUTH_RESPONSE` + `CONFIG_PUSH`. SSO settings live in
 `src/sso.rs` (verification) and `src/config.rs` (`OIDC_ISSUER`,
@@ -185,6 +225,15 @@ behind a load balancer that needs TCP passthrough with client-IP preservation
 (a proxy that hides the client address would make every user share one source).
 Refusals and other pre-auth events are logged at most once per 10 seconds per
 kind, with a count of what was not logged.
+
+### Tunnel packet filter
+
+Packets a client sends into the tunnel are checked in the server before they
+reach the TUN device (`src/router.rs`): anything that is not an IPv4 packet
+whose source is the address assigned to that session is dropped, and with
+`VPN_CLIENT_ISOLATION=true` (the default) so is a packet addressed to another
+client's tunnel address (the gateway stays reachable). Drops are counted on
+the 60-second status line and logged at most once per 10 seconds.
 
 ## Status
 

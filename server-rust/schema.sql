@@ -12,6 +12,10 @@ CREATE TABLE users (
     email VARCHAR(100),
     is_active BOOLEAN DEFAULT true,
     max_connections INT DEFAULT 3,
+    -- Session tokens issued before this instant are refused (NULL = never
+    -- revoked). Set when an admin disconnects, deactivates or logs a user out.
+    -- Existing databases get the column at server startup (auth::ensure_schema).
+    tokens_valid_after TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );

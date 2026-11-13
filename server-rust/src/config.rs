@@ -36,6 +36,13 @@ pub struct VpnConfig {
     pub gateway: String,
     pub dns: Vec<String>,
     pub mtu: u32,
+    /// Drop packets one client addresses to another client's tunnel IP
+    /// (`VPN_CLIENT_ISOLATION`, default on).
+    pub client_isolation: bool,
+    /// Accept `authType: "password"` logins (`VPN_PASSWORD_AUTH`, default on
+    /// for backwards compatibility; production should turn it off once every
+    /// user signs in through SSO).
+    pub password_auth: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +101,34 @@ pub struct SsoConfig {
     /// Empty = any verified account accepted (a startup warning is logged) —
     /// kept for backwards compatibility with existing deployments.
     pub allowed_domains: Vec<String>,
+    /// How long after a real login a session token may keep being renewed, in
+    /// days (`SSO_SESSION_MAX_LIFETIME_DAYS`). `None` = same as
+    /// `session_ttl_days`, i.e. a real SSO login at least that often.
+    pub max_lifetime_days: Option<i64>,
+    /// Oldest id_token accepted, by its `iat`, in seconds
+    /// (`SSO_ID_TOKEN_MAX_AGE_SECS`).
+    pub id_token_max_age_secs: i64,
+}
+
+impl SsoConfig {
+    /// Absolute session lifetime since the last real login, in days.
+    pub fn effective_max_lifetime_days(&self) -> i64 {
+        self.max_lifetime_days.unwrap_or(self.session_ttl_days)
+    }
+}
+
+/// gatehouse account-status lookups (revocation propagation). Disabled unless
+/// both the URL and the secret are set.
+#[derive(Debug, Clone)]
+pub struct GatehouseConfig {
+    /// Base URL (`GATEHOUSE_STATUS_URL`, e.g. `https://auth.datasee.co.kr`).
+    pub status_url: String,
+    /// Shared secret sent as `X-Gatehouse-Secret` (`GATEHOUSE_STATUS_SECRET`).
+    pub status_secret: String,
+    /// How often live sessions are re-checked, in seconds
+    /// (`GATEHOUSE_RECHECK_SECS`). This pass also re-checks the local account
+    /// state, so it runs even when gatehouse lookups are disabled.
+    pub recheck_secs: u64,
 }
 
 /// Resource limits for the public VPN listener (see [`crate::limits`]).
@@ -235,6 +270,7 @@ pub struct Config {
     pub admin: AdminConfig,
     pub split: SplitConfig,
     pub sso: SsoConfig,
+    pub gatehouse: GatehouseConfig,
     pub limits: LimitsConfig,
     pub jwt_secret: String,
     pub production: bool,
@@ -351,6 +387,8 @@ impl Config {
                     .filter(|s| !s.is_empty())
                     .collect(),
                 mtu,
+                client_isolation: env_bool("VPN_CLIENT_ISOLATION", true),
+                password_auth: env_bool("VPN_PASSWORD_AUTH", true),
             },
             admin: AdminConfig {
                 port: env_parse("ADMIN_PORT", 8080),
@@ -375,7 +413,20 @@ impl Config {
                     client_id,
                     session_ttl_days: env_parse("SSO_SESSION_TTL_DAYS", 30),
                     allowed_domains: env_csv("SSO_ALLOWED_DOMAINS"),
+                    max_lifetime_days: env::var("SSO_SESSION_MAX_LIFETIME_DAYS")
+                        .ok()
+                        .and_then(|v| v.trim().parse::<i64>().ok())
+                        .filter(|days| *days > 0),
+                    id_token_max_age_secs: env_parse("SSO_ID_TOKEN_MAX_AGE_SECS", 600i64).max(1),
                 }
+            },
+            gatehouse: GatehouseConfig {
+                status_url: env_or("GATEHOUSE_STATUS_URL", "")
+                    .trim()
+                    .trim_end_matches('/')
+                    .to_string(),
+                status_secret: env_or("GATEHOUSE_STATUS_SECRET", "").trim().to_string(),
+                recheck_secs: env_parse("GATEHOUSE_RECHECK_SECS", 300u64).max(10),
             },
             limits: LimitsConfig::from_env(mtu),
             jwt_secret: env_or("JWT_SECRET", "change-this-in-production"),

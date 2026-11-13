@@ -70,6 +70,9 @@ struct AdminState {
     /// The live copies of settings the panel can change, so an edit takes
     /// effect without a restart.
     auth: Arc<crate::auth::AuthService>,
+    /// Live tunnels, so "disconnect" closes the connection and not just its
+    /// database row.
+    sessions: Arc<crate::session::SessionManager>,
     /// Allowlist for admin logins. Empty = SSO/forward-auth disabled.
     /// Behind a lock: the panel can edit it, and the change must apply to
     /// the very next login rather than at the next restart.
@@ -109,6 +112,7 @@ pub async fn serve(
     production: bool,
     settings: Arc<Store>,
     auth: Arc<crate::auth::AuthService>,
+    sessions: Arc<crate::session::SessionManager>,
 ) -> anyhow::Result<()> {
     // Refuse the compiled-in default password in production: a panel that
     // manages VPN accounts must not be reachable with known credentials.
@@ -163,6 +167,7 @@ pub async fn serve(
         trusted_proxies,
         settings,
         auth,
+        sessions,
         tokens: Arc::new(Mutex::new(HashMap::new())),
         attempts: Arc::new(Mutex::new(HashMap::new())),
         split,
@@ -179,6 +184,7 @@ pub async fn serve(
         .route("/api/logout", post(logout))
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/:id", put(update_user).delete(delete_user))
+        .route("/api/users/:id/revoke", post(revoke_user))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/:id", delete(delete_session))
         .route("/api/stats", get(stats))
@@ -566,23 +572,30 @@ async fn list_users(
     let client = state.db.get().await.map_err(|_| db_error())?;
     let rows = client
         .query(
-            "SELECT id, username, is_active, max_connections, created_at, updated_at \
+            "SELECT id, username, is_active, max_connections, created_at, updated_at, \
+                    tokens_valid_after \
              FROM users ORDER BY created_at DESC",
             &[],
         )
         .await
         .map_err(|_| db_error())?;
 
+    // Counted from the live tunnels, not from the `sessions` table: this is
+    // what "is this person connected right now" actually means.
+    let live = state.sessions.live_counts();
     let users: Vec<Value> = rows
         .iter()
         .map(|r| {
+            let id = r.get::<_, Uuid>("id");
             json!({
-                "id": r.get::<_, Uuid>("id").to_string(),
+                "id": id.to_string(),
                 "username": r.get::<_, String>("username"),
                 "is_active": r.get::<_, bool>("is_active"),
                 "max_connections": r.get::<_, i32>("max_connections"),
                 "created_at": ts(r, "created_at"),
                 "updated_at": ts(r, "updated_at"),
+                "tokens_valid_after": ts(r, "tokens_valid_after"),
+                "live_connections": live.get(&id).copied().unwrap_or(0),
             })
         })
         .collect();
@@ -661,7 +674,8 @@ async fn update_user(
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateUserBody>,
 ) -> ApiResult {
-    check_auth(&state, &headers)?;
+    let actor = check_auth(&state, &headers)?;
+    let deactivating = body.is_active == Some(false);
 
     let mut set_clauses: Vec<String> = vec!["updated_at = NOW()".to_string()];
     let mut params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>> = Vec::new();
@@ -686,6 +700,12 @@ async fn update_user(
     if let Some(is_active) = body.is_active {
         params.push(Box::new(is_active));
         set_clauses.push(format!("is_active = ${}", params.len()));
+    }
+    if deactivating {
+        // Deactivation is a revocation: void the tokens in the same statement,
+        // so re-activating the account later does not bring old tokens back.
+        params.push(Box::new(revocation_instant()));
+        set_clauses.push(format!("tokens_valid_after = ${}", params.len()));
     }
     if let Some(max_conn) = body.max_connections {
         params.push(Box::new(max_conn));
@@ -714,12 +734,29 @@ async fn update_user(
     };
 
     tracing::info!("User updated: {id}");
+
+    // The row is already inactive, so nothing closed here can reconnect.
+    let mut closed = 0;
+    if deactivating {
+        let username: String = row.get("username");
+        closed = close_user_sessions(&state, id, None, "account deactivated by an admin").await;
+        state
+            .settings
+            .audit(
+                &actor,
+                "user.deactivate",
+                &format!("{username}: 비활성화, 토큰 무효화, 연결 {closed}개 종료"),
+            )
+            .await;
+    }
+
     Ok(Json(json!({
         "id": row.get::<_, Uuid>("id").to_string(),
         "username": row.get::<_, String>("username"),
         "is_active": row.get::<_, bool>("is_active"),
         "max_connections": row.get::<_, i32>("max_connections"),
         "updated_at": ts(&row, "updated_at"),
+        "closedConnections": closed,
     })))
 }
 
@@ -728,7 +765,7 @@ async fn delete_user(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult {
-    check_auth(&state, &headers)?;
+    let actor = check_auth(&state, &headers)?;
     let client = state.db.get().await.map_err(|_| db_error())?;
     let row = client
         .query_opt(
@@ -741,8 +778,124 @@ async fn delete_user(
     let Some(row) = row else {
         return Err(err(StatusCode::NOT_FOUND, "User not found"));
     };
-    tracing::info!("User deleted: {}", row.get::<_, String>("username"));
-    Ok(Json(json!({ "success": true })))
+    let username: String = row.get("username");
+    tracing::info!("User deleted: {username}");
+
+    // The user's `sessions` rows went with the user (ON DELETE CASCADE), and
+    // their tokens no longer resolve to anyone; what is left is the tunnels
+    // that are open right now.
+    let closed = state.sessions.kill_user(id, "user deleted by an admin").len();
+    state
+        .settings
+        .audit(&actor, "user.delete", &format!("{username}: 삭제, 연결 {closed}개 종료"))
+        .await;
+    Ok(Json(json!({ "success": true, "closedConnections": closed })))
+}
+
+/// "모든 기기에서 로그아웃": void every session token of the user and close
+/// their live tunnels. The account stays active — an SSO user gets back in by
+/// signing in again.
+async fn revoke_user(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult {
+    let actor = check_auth(&state, &headers)?;
+    let client = state.db.get().await.map_err(|_| db_error())?;
+    let row = client
+        .query_opt("SELECT username FROM users WHERE id = $1", &[&id])
+        .await
+        .map_err(|_| db_error())?;
+    let Some(row) = row else {
+        return Err(err(StatusCode::NOT_FOUND, "User not found"));
+    };
+    let username: String = row.get("username");
+    drop(client);
+
+    let closed = revoke_and_close(&state, id, None, "logged out everywhere by an admin").await?;
+    state
+        .settings
+        .audit(
+            &actor,
+            "user.revoke",
+            &format!("{username}: 모든 기기에서 로그아웃 (토큰 무효화, 연결 {closed}개 종료)"),
+        )
+        .await;
+    Ok(Json(json!({ "success": true, "closedConnections": closed })))
+}
+
+/// The instant written to `users.tokens_valid_after`. Millisecond precision,
+/// to match the `iat_ms` claim it is compared against.
+fn revocation_instant() -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::from_timestamp_millis(now_ms()).unwrap_or_else(chrono::Utc::now)
+}
+
+/// Void a user's tokens, then close their tunnels. In that order: a client
+/// whose tunnel is closed reconnects within seconds, and must find its token
+/// already dead. If the tokens cannot be voided nothing is closed.
+async fn revoke_and_close(
+    state: &AdminState,
+    user_id: Uuid,
+    extra_row: Option<Uuid>,
+    reason: &str,
+) -> Result<usize, ApiError> {
+    let Some(killed) = state.auth.revoke_user(user_id, reason).await else {
+        return Err(db_error());
+    };
+    Ok(finish_closing(state, killed, extra_row).await)
+}
+
+/// Close a user's live tunnels (the caller has already made sure they cannot
+/// come back) and return how many were closed.
+async fn close_user_sessions(
+    state: &AdminState,
+    user_id: Uuid,
+    extra_row: Option<Uuid>,
+    reason: &str,
+) -> usize {
+    let killed = state.sessions.kill_user(user_id, reason);
+    finish_closing(state, killed, extra_row).await
+}
+
+/// Wait for the closed connections to finish their own cleanup (release the
+/// tunnel IP, write the disconnect log, delete the `sessions` row), so that
+/// the panel's next refresh already shows them gone. Rows that are still there
+/// after the wait — or that had no live tunnel behind them to begin with — are
+/// removed here.
+async fn finish_closing(
+    state: &AdminState,
+    killed: Vec<Arc<crate::session::manager::SessionInfo>>,
+    extra_row: Option<Uuid>,
+) -> usize {
+    let closed = killed.len();
+    let rows: Vec<Uuid> = killed
+        .iter()
+        .filter_map(|info| info.db_id)
+        .chain(extra_row)
+        .collect();
+    if rows.is_empty() {
+        return closed;
+    }
+    let Ok(client) = state.db.get().await else {
+        return closed;
+    };
+    if closed > 0 {
+        for _ in 0..30 {
+            let remaining = client
+                .query_one("SELECT COUNT(*) FROM sessions WHERE id = ANY($1)", &[&rows])
+                .await
+                .map(|row| row.get::<_, i64>(0))
+                .unwrap_or(0);
+            if remaining == 0 {
+                return closed;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+    let _ = client
+        .execute("DELETE FROM sessions WHERE id = ANY($1)", &[&rows])
+        .await;
+    closed
 }
 
 // ---------------------------------------------------------------------------
@@ -770,8 +923,12 @@ async fn list_sessions(
     let sessions: Vec<Value> = rows
         .iter()
         .map(|r| {
+            let id = r.get::<_, Uuid>("id");
             json!({
-                "id": r.get::<_, Uuid>("id").to_string(),
+                // False for a row whose tunnel is gone (it is cleaned up by
+                // the stale-session sweep, or by disconnecting it here).
+                "live": state.sessions.find_by_db_id(id).is_some(),
+                "id": id.to_string(),
                 "assigned_ip": r.get::<_, String>("assigned_ip"),
                 "client_platform": r.get::<_, String>("client_platform"),
                 "connected_at": ts(r, "connected_at"),
@@ -782,20 +939,53 @@ async fn list_sessions(
     Ok(Json(json!(sessions)))
 }
 
+/// "연결 끊기". Closing the socket alone would achieve nothing — every client
+/// reconnects on its own with its session token — so this is a revocation of
+/// the session's user: their tokens are voided and all of their tunnels are
+/// closed, which sends an SSO user back to the sign-in screen. (A password
+/// user can log straight back in; deactivate the account to keep one out.)
 async fn delete_session(
     State(state): State<AdminState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult {
-    check_auth(&state, &headers)?;
+    let actor = check_auth(&state, &headers)?;
     let client = state.db.get().await.map_err(|_| db_error())?;
-    // Hard delete, consistent with how the VPN core ends sessions.
-    client
-        .execute("DELETE FROM sessions WHERE id = $1", &[&id])
+    let row = client
+        .query_opt(
+            "SELECT s.user_id, s.assigned_ip, u.username \
+             FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = $1",
+            &[&id],
+        )
         .await
         .map_err(|_| db_error())?;
-    tracing::info!("Session terminated: {id}");
-    Ok(Json(json!({ "success": true })))
+    drop(client);
+
+    // The row normally exists; fall back to the live tunnel if it does not.
+    let (user_id, label) = match (&row, state.sessions.find_by_db_id(id)) {
+        (Some(row), _) => (
+            row.get::<_, Uuid>("user_id"),
+            format!(
+                "{} ({})",
+                row.get::<_, String>("username"),
+                row.get::<_, String>("assigned_ip")
+            ),
+        ),
+        (None, Some(info)) => (info.user_id, info.username.clone()),
+        (None, None) => return Err(err(StatusCode::NOT_FOUND, "Session not found")),
+    };
+
+    let closed = revoke_and_close(&state, user_id, Some(id), "disconnected by an admin").await?;
+    tracing::info!("Session terminated: {id} ({closed} live connection(s) closed)");
+    state
+        .settings
+        .audit(
+            &actor,
+            "session.disconnect",
+            &format!("{label}: 연결 끊기 (토큰 무효화, 연결 {closed}개 종료)"),
+        )
+        .await;
+    Ok(Json(json!({ "success": true, "closedConnections": closed })))
 }
 
 // ---------------------------------------------------------------------------
@@ -920,6 +1110,33 @@ async fn set_split(
     Json(body): Json<SplitBody>,
 ) -> ApiResult {
     let actor = check_auth(&state, &headers)?;
+
+    // Same rules as the settings form, checked for all three values before
+    // anything is written: this endpoint used to store whatever it was sent,
+    // and a bad entry could leave the policy half-saved.
+    let clean = |entries: &[String]| -> Result<Vec<String>, ApiError> {
+        let entries: Vec<String> = entries
+            .iter()
+            .map(|e| e.trim().to_string())
+            .filter(|e| !e.is_empty())
+            .collect();
+        if entries.iter().any(|e| e.contains(',')) {
+            return Err(err(StatusCode::BAD_REQUEST, "항목 안에 쉼표를 넣을 수 없습니다"));
+        }
+        Ok(entries)
+    };
+    let body = SplitBody {
+        enabled: body.enabled,
+        routes: clean(&body.routes)?,
+        domains: clean(&body.domains)?,
+    };
+    for (key, value) in [
+        ("SPLIT_TUNNEL", body.enabled.to_string()),
+        ("SPLIT_INCLUDE_ROUTES", body.routes.join(",")),
+        ("SPLIT_INCLUDE_DOMAINS", body.domains.join(",")),
+    ] {
+        settings::validate(key, &value).map_err(|e| err(StatusCode::BAD_REQUEST, &e))?;
+    }
 
     // Persist before applying. The policy used to live only in memory, so a
     // container restart silently reverted whatever was set here back to the

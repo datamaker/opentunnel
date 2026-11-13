@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior};
 use uuid::Uuid;
 
-use super::manager::SessionHandle;
+use super::manager::{KillSwitch, SessionHandle, SessionInfo};
 
 const KEEPALIVE_TICK: Duration = Duration::from_secs(10);
 const IDLE_KEEPALIVE: Duration = Duration::from_secs(30);
@@ -120,56 +120,21 @@ pub async fn handle<S>(
         last_activity: Instant::now(),
         guard,
         auth_deadline,
+        kill: Arc::new(KillSwitch::default()),
+        dropped_packets: 0,
     };
 
     tracing::info!("New connection {} from {}", conn.id, peer);
 
-    // Until the peer authenticates, only an auth request has to fit in a frame.
-    let mut buffer = MessageBuffer::new(state.config.limits.max_preauth_frame);
-    let mut chunk = vec![0u8; READ_CHUNK];
-    let mut ticker = tokio::time::interval(KEEPALIVE_TICK);
-    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-    loop {
-        tokio::select! {
-            read = reader.read(&mut chunk) => {
-                match read {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        conn.bytes_received.fetch_add(n as u64, Ordering::Relaxed);
-                        conn.last_activity = Instant::now();
-                        buffer.append(&chunk[..n]);
-                        if !conn.drain_buffer(&mut buffer).await {
-                            break;
-                        }
-                    }
-                }
-            }
-            _ = ticker.tick() => {
-                let idle = conn.last_activity.elapsed();
-                if idle > IDLE_TIMEOUT {
-                    tracing::info!("Session {}: timeout, closing", conn.id);
-                    break;
-                }
-                if idle > IDLE_KEEPALIVE {
-                    let _ = conn.tx.send(serializer::keepalive()).await;
-                }
-            }
-            // Absolute authentication deadline. Unlike the idle timeout it is
-            // not refreshed by reads, so trickling bytes (or keepalives) cannot
-            // hold an unauthenticated connection open.
-            _ = tokio::time::sleep_until(auth_deadline), if !conn.authenticated => {
-                conn.guard.record_auth_failure();
-                if let Some(suppressed) = state.limits.deadline_log.should_log_now() {
-                    tracing::info!(
-                        "Session {}: no authentication from {} before the deadline, closing \
-                         ({suppressed} similar events not logged)",
-                        conn.id,
-                        peer
-                    );
-                }
-                break;
-            }
+    // Run the session until the peer goes away, or until the server ends it
+    // (admin disconnect, revocation). The kill switch is raced against the
+    // whole loop rather than polled inside it, so a session is closed even
+    // while it is blocked writing to a client that has stopped reading.
+    let kill = conn.kill.clone();
+    tokio::select! {
+        _ = conn.run(&mut reader, auth_deadline) => {}
+        reason = kill.triggered() => {
+            tracing::info!("Session {}: closed by the server ({reason})", conn.id);
         }
     }
 
@@ -207,9 +172,69 @@ struct Connection {
     last_activity: Instant,
     guard: ConnGuard,
     auth_deadline: Instant,
+    /// Lets the session manager close this connection from outside.
+    kill: Arc<KillSwitch>,
+    /// Packets from this client refused by the packet filter.
+    dropped_packets: u64,
 }
 
 impl Connection {
+    /// Read and process frames until the connection should close.
+    async fn run<R>(&mut self, reader: &mut R, auth_deadline: Instant)
+    where
+        R: AsyncRead + Unpin,
+    {
+        let state = self.state.clone();
+        // Until the peer authenticates, only an auth request has to fit in a frame.
+        let mut buffer = MessageBuffer::new(state.config.limits.max_preauth_frame);
+        let mut chunk = vec![0u8; READ_CHUNK];
+        let mut ticker = tokio::time::interval(KEEPALIVE_TICK);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                read = reader.read(&mut chunk) => {
+                    match read {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            self.bytes_received.fetch_add(n as u64, Ordering::Relaxed);
+                            self.last_activity = Instant::now();
+                            buffer.append(&chunk[..n]);
+                            if !self.drain_buffer(&mut buffer).await {
+                                break;
+                            }
+                        }
+                    }
+                }
+                _ = ticker.tick() => {
+                    let idle = self.last_activity.elapsed();
+                    if idle > IDLE_TIMEOUT {
+                        tracing::info!("Session {}: timeout, closing", self.id);
+                        break;
+                    }
+                    if idle > IDLE_KEEPALIVE {
+                        let _ = self.tx.send(serializer::keepalive()).await;
+                    }
+                }
+                // Absolute authentication deadline. Unlike the idle timeout it is
+                // not refreshed by reads, so trickling bytes (or keepalives) cannot
+                // hold an unauthenticated connection open.
+                _ = tokio::time::sleep_until(auth_deadline), if !self.authenticated => {
+                    self.guard.record_auth_failure();
+                    if let Some(suppressed) = state.limits.deadline_log.should_log_now() {
+                        tracing::info!(
+                            "Session {}: no authentication from {} before the deadline, closing \
+                             ({suppressed} similar events not logged)",
+                            self.id,
+                            self.peer
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     /// Tear the connection state down, keeping only its limiter slots.
     fn into_guard(self) -> ConnGuard {
         self.guard
@@ -281,8 +306,26 @@ impl Connection {
                 false
             }
             MessageType::DataPacket => {
-                if self.authenticated {
-                    self.state.tun.write(frame.payload).await;
+                // `assigned_ip` is set exactly when the session is authenticated.
+                if let Some(assigned) = self.assigned_ip.filter(|_| self.authenticated) {
+                    match self.state.filter.check(&frame.payload, assigned) {
+                        Ok(()) => self.state.tun.write(frame.payload).await,
+                        Err(refusal) => {
+                            self.dropped_packets += 1;
+                            if let Some(suppressed) =
+                                self.state.limits.packet_drop_log.should_log_now()
+                            {
+                                tracing::warn!(
+                                    "Session {}: dropped a packet from {} ({refusal:?}; \
+                                     assigned {assigned}, {} dropped on this session, \
+                                     {suppressed} similar events not logged)",
+                                    self.id,
+                                    self.peer,
+                                    self.dropped_packets,
+                                );
+                            }
+                        }
+                    }
                 }
                 true
             }
@@ -357,17 +400,28 @@ impl Connection {
         self.authenticated = true;
 
         // Auth success + config push.
-        self.send_auth_response(true, None, Some(auth_ok.session_token))
+        self.send_auth_response(true, None, Some(auth_ok.session_token.clone()))
             .await;
         self.send_config(ip).await;
 
-        // Register for packet routing.
+        // Register for packet routing — and for revocation: from here on the
+        // session can be found by user and closed from outside.
         self.state.sessions.register(SessionHandle {
             id: self.id,
             assigned_ip: ip,
             tx: self.tx.clone(),
             bytes_sent: self.bytes_sent.clone(),
             bytes_received: self.bytes_received.clone(),
+            info: Arc::new(SessionInfo {
+                user_id: auth_ok.user_id,
+                username: auth_ok.username.clone(),
+                db_id: self.session_db_id,
+                sso: auth_ok.sso,
+                email: auth_ok.email.clone(),
+                issued_at_ms: auth_ok.issued_at_ms,
+                auth_time: auth_ok.auth_time,
+            }),
+            kill: self.kill.clone(),
         });
 
         tracing::info!(
@@ -462,7 +516,13 @@ impl Connection {
 
         self.state
             .auth
-            .authenticate_sso(&identity.email, identity.name.as_deref(), request.platform, self.peer)
+            .authenticate_sso(
+                &identity.email,
+                identity.name.as_deref(),
+                identity.issued_at,
+                request.platform,
+                self.peer,
+            )
             .await
     }
 

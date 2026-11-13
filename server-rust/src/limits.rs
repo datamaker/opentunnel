@@ -205,6 +205,8 @@ pub struct ConnLimiter {
     pub deadline_log: LogThrottle,
     /// Throttle for TLS handshake failure log lines.
     pub handshake_log: LogThrottle,
+    /// Throttle for "packet refused by the tunnel filter" log lines.
+    pub packet_drop_log: LogThrottle,
 }
 
 impl ConnLimiter {
@@ -240,6 +242,7 @@ impl ConnLimiter {
             frame_log: LogThrottle::new(),
             deadline_log: LogThrottle::new(),
             handshake_log: LogThrottle::new(),
+            packet_drop_log: LogThrottle::new(),
         })
     }
 

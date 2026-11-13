@@ -121,7 +121,8 @@ pub const EDITABLE: &[Definition] = &[
         apply: Apply::Restart,
         group: "SSO",
         label: "세션 토큰 수명(일)",
-        help: "SSO 로그인으로 발급되는 토큰의 유효 기간.",
+        help: "SSO 로그인으로 발급되는 토큰의 유효 기간. \
+               SSO_SESSION_MAX_LIFETIME_DAYS 를 따로 두지 않았다면 실제 SSO 로그인 주기이기도 합니다.",
     },
     Definition {
         key: "ADMIN_SSO_EMAILS",

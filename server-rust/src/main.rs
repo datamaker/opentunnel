@@ -8,6 +8,7 @@ mod admin;
 mod auth;
 mod config;
 mod db;
+mod gatehouse;
 mod ippool;
 mod limits;
 mod logging;
@@ -84,6 +85,12 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Columns added since the database was created (see `auth::ensure_schema`
+    // for why this is safe on a live database).
+    auth::ensure_schema(&db)
+        .await
+        .context("failed to migrate the users table (tokens_valid_after)")?;
+
     // Settings the operator edits from the panel. These override the
     // environment per key, so anything never edited keeps its env value.
     // Loaded before the services below are built, since they capture config.
@@ -102,14 +109,50 @@ async fn main() -> anyhow::Result<()> {
 
     // Core services.
     let ip_pool = Arc::new(IpPool::new(&format!("{}/24", config.vpn.subnet)));
+    let sessions = Arc::new(SessionManager::new());
+
+    // gatehouse account status: off unless both the URL and the secret are set.
+    let gatehouse = Arc::new(gatehouse::GatehouseStatus::from_config(
+        &config.gatehouse.status_url,
+        &config.gatehouse.status_secret,
+    ));
+    if gatehouse.enabled() {
+        tracing::info!(
+            "gatehouse status checks enabled ({}), live sessions re-checked every {}s",
+            config.gatehouse.status_url,
+            config.gatehouse.recheck_secs
+        );
+    } else {
+        tracing::info!(
+            "gatehouse status checks disabled \
+             (GATEHOUSE_STATUS_URL / GATEHOUSE_STATUS_SECRET not both set)"
+        );
+    }
+
+    if !config.vpn.password_auth {
+        tracing::info!("Password authentication disabled (VPN_PASSWORD_AUTH=false)");
+    } else if config.production {
+        tracing::warn!(
+            "Password authentication is enabled. Once every user signs in through SSO, \
+             set VPN_PASSWORD_AUTH=false: password accounts are not covered by SSO \
+             offboarding and can simply log in again after being disconnected."
+        );
+    }
+
     let auth = Arc::new(AuthService::new(
         db.clone(),
-        config.jwt_secret.clone(),
-        config.sso.session_ttl_days,
-        config.sso.allowed_domains.clone(),
-        config.limits.auth_fail_log_per_min,
+        Arc::new(auth::PgUserStore::new(db.clone())),
+        sessions.clone(),
+        gatehouse.clone(),
+        auth::AuthSettings {
+            jwt_secret: config.jwt_secret.clone(),
+            sso_session_ttl_days: config.sso.session_ttl_days,
+            max_lifetime_days: config.sso.effective_max_lifetime_days(),
+            sso_allowed: config.sso.allowed_domains.clone(),
+            password_auth: config.vpn.password_auth,
+            auth_fail_log_per_min: config.limits.auth_fail_log_per_min,
+        },
     ));
-    let sessions = Arc::new(SessionManager::new());
 
     // OIDC SSO: enabled only when OIDC_ISSUER is set.
     let sso = if config.sso.issuer.is_empty() {
@@ -131,6 +174,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Arc::new(sso::SsoVerifier::new(
             config.sso.issuer.clone(),
             config.sso.client_id.clone(),
+            config.sso.id_token_max_age_secs,
         )))
     };
 
@@ -142,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
         Some(_) => Some(Arc::new(sso::SsoVerifier::new(
             config.sso.issuer.clone(),
             config.sso.admin_client_id.clone(),
+            config.sso.id_token_max_age_secs,
         ))),
     };
 
@@ -184,8 +229,18 @@ async fn main() -> anyhow::Result<()> {
         split: split.clone(),
         sso,
         tun: tun_handle,
+        filter: router::PacketFilter::new(
+            config.vpn.subnet.parse().unwrap_or(std::net::Ipv4Addr::new(10, 8, 0, 0)),
+            24,
+            ip_pool.gateway(),
+            config.vpn.client_isolation,
+        ),
         limits: limits::ConnLimiter::new(&config.limits),
     });
+    tracing::info!(
+        "Tunnel packet filter: source address enforced, client-to-client isolation {}",
+        if config.vpn.client_isolation { "ON" } else { "OFF (VPN_CLIENT_ISOLATION=false)" }
+    );
     tracing::info!(
         "Listener limits: {} connections, {} unauthenticated per source, \
          {} connects/min and {} failed auths/min per source, \
@@ -208,6 +263,7 @@ async fn main() -> anyhow::Result<()> {
         let admin_client_id = config.sso.admin_client_id.clone();
         let admin_settings = settings.clone();
         let admin_auth = auth.clone();
+        let admin_sessions = sessions.clone();
         let production = config.production;
         tokio::spawn(async move {
             if let Err(e) = admin::serve(
@@ -219,6 +275,7 @@ async fn main() -> anyhow::Result<()> {
                 production,
                 admin_settings,
                 admin_auth,
+                admin_sessions,
             )
             .await
             {
@@ -231,6 +288,7 @@ async fn main() -> anyhow::Result<()> {
     {
         let sessions = sessions.clone();
         let ip_pool = ip_pool.clone();
+        let shared = shared.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             interval.tick().await;
@@ -238,16 +296,40 @@ async fn main() -> anyhow::Result<()> {
                 interval.tick().await;
                 let s = sessions.stats();
                 let pool = ip_pool.stats();
+                let drops = shared.filter.stats();
                 tracing::info!(
                     "status: {} active sessions, IP pool {}/{} ({} free), \
-                     {} bytes sent / {} received",
+                     {} bytes sent / {} received, client packets dropped since start: \
+                     {} wrong source, {} client-to-client, {} malformed",
                     s.active_sessions,
                     pool.used,
                     pool.total,
                     pool.available,
                     s.total_bytes_sent,
                     s.total_bytes_received,
+                    drops.bad_source,
+                    drops.isolated,
+                    drops.malformed,
                 );
+            }
+        });
+    }
+
+    // Revalidation of live tunnels: local account state for everyone, and
+    // gatehouse's account status for SSO users.
+    {
+        let auth = auth.clone();
+        let every = Duration::from_secs(config.gatehouse.recheck_secs);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(every);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await; // consume the immediate first tick
+            loop {
+                interval.tick().await;
+                let closed = auth.revalidate_sessions().await;
+                if closed > 0 {
+                    tracing::info!("Revalidation closed {closed} session(s)");
+                }
             }
         });
     }

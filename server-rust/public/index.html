@@ -7,7 +7,12 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <title>VPN Admin Panel</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Tailwind Play CDN build 3.4.17, served from this server instead of
+       cdn.tailwindcss.com: the panel manages VPN accounts, so it must not run
+       whatever a third-party host serves on a given day. (SRI is not an option
+       for the CDN URL: it sends no CORS headers, and integrity checks need
+       them.) sha256 176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15 -->
+  <script src="/vendor/tailwindcss-3.4.17.js"></script>
   <script>
     tailwind.config = {
       theme: {
@@ -131,6 +136,7 @@
             <tr>
               <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">사용자명</th>
               <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">상태</th>
+              <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">현재 연결</th>
               <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">최대 연결</th>
               <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">생성일</th>
               <th class="px-4 py-3 text-left text-sm font-medium text-gray-500">작업</th>
@@ -147,6 +153,10 @@
       <div id="panelSessions" class="bg-white rounded-lg shadow hidden">
         <div class="p-4 border-b">
           <h2 class="text-lg font-semibold">활성 세션</h2>
+          <p class="text-gray-500 text-sm mt-1">
+            "연결 끊기"는 해당 사용자의 세션 토큰을 무효화하고 그 사용자의 모든 연결을 닫습니다.
+            SSO 사용자는 다시 SSO 로그인을 해야 접속할 수 있습니다.
+          </p>
         </div>
         <div class="overflow-x-auto">
         <table class="w-full">
@@ -678,6 +688,12 @@
             domains: parseLines('splitDomains')
           })
         });
+        if (s.error) {
+          statusEl.textContent = `저장 실패: ${s.error}`;
+          statusEl.className = 'text-sm text-red-600';
+          statusEl.classList.remove('hidden');
+          return;
+        }
         document.getElementById('splitEffective').textContent =
           (s.routes || []).join('\n') || '(없음)';
         statusEl.textContent = '저장됨 — 이후 연결하는 클라이언트부터 적용됩니다.';
@@ -694,6 +710,11 @@
       try {
         const users = await api('/api/users');
         const tbody = document.getElementById('usersTable');
+        // Values from the server go into the markup only through escapeHtml,
+        // and never into inline event handlers: an HTML-escaped quote inside
+        // onclick="f('...')" is decoded back before the script runs, so a
+        // username like  ');alert(1)//  would execute. Buttons carry data-*
+        // attributes instead and one delegated listener reads them.
         tbody.innerHTML = users.map(u => `
           <tr>
             <td class="px-4 py-3 font-medium">${escapeHtml(u.username)}</td>
@@ -702,12 +723,20 @@
                 ${u.is_active ? '활성' : '비활성'}
               </span>
             </td>
-            <td class="px-4 py-3">${u.max_connections}</td>
+            <td class="px-4 py-3">${Number(u.live_connections) || 0}</td>
+            <td class="px-4 py-3">${Number(u.max_connections) || 0}</td>
             <td class="px-4 py-3 text-gray-500">${new Date(u.created_at).toLocaleDateString('ko-KR')}</td>
             <td class="px-4 py-3">
-              <button onclick="showEditUserModal('${u.id}', '${escapeHtml(u.username)}', ${u.is_active}, ${u.max_connections})"
+              <button type="button" data-action="edit-user"
+                      data-id="${escapeHtml(u.id)}" data-username="${escapeHtml(u.username)}"
+                      data-active="${u.is_active ? '1' : '0'}"
+                      data-max="${Number(u.max_connections) || 0}"
                       class="text-blue-600 hover:text-blue-800 mr-2">수정</button>
-              <button onclick="deleteUser('${u.id}', '${escapeHtml(u.username)}')"
+              <button type="button" data-action="revoke-user"
+                      data-id="${escapeHtml(u.id)}" data-username="${escapeHtml(u.username)}"
+                      class="text-amber-600 hover:text-amber-800 mr-2">모든 기기에서 로그아웃</button>
+              <button type="button" data-action="delete-user"
+                      data-id="${escapeHtml(u.id)}" data-username="${escapeHtml(u.username)}"
                       class="text-red-600 hover:text-red-800">삭제</button>
             </td>
           </tr>
@@ -716,6 +745,24 @@
         console.error('Failed to load users', err);
       }
     }
+
+    document.getElementById('usersTable').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const { action, id, username } = btn.dataset;
+      if (action === 'edit-user') {
+        showEditUserModal(id, username, btn.dataset.active === '1', Number(btn.dataset.max));
+      } else if (action === 'revoke-user') {
+        revokeUser(id, username);
+      } else if (action === 'delete-user') {
+        deleteUser(id, username);
+      }
+    });
+
+    document.getElementById('sessionsTable').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action="terminate-session"]');
+      if (btn) terminateSession(btn.dataset.id, btn.dataset.username);
+    });
 
     // Sessions
     async function loadSessions() {
@@ -731,11 +778,13 @@
         tbody.innerHTML = sessions.map(s => `
           <tr>
             <td class="px-4 py-3 font-medium">${escapeHtml(s.username)}</td>
-            <td class="px-4 py-3 font-mono text-sm">${s.assigned_ip}</td>
-            <td class="px-4 py-3">${s.client_platform || '-'}</td>
+            <td class="px-4 py-3 font-mono text-sm">${escapeHtml(s.assigned_ip)}${
+              s.live === false ? ' <span class="text-xs text-gray-400 font-sans">(터널 없음)</span>' : ''}</td>
+            <td class="px-4 py-3">${escapeHtml(s.client_platform || '-')}</td>
             <td class="px-4 py-3 text-gray-500">${new Date(s.connected_at).toLocaleString('ko-KR')}</td>
             <td class="px-4 py-3">
-              <button onclick="terminateSession('${s.id}')"
+              <button type="button" data-action="terminate-session"
+                      data-id="${escapeHtml(s.id)}" data-username="${escapeHtml(s.username)}"
                       class="text-red-600 hover:text-red-800">연결 끊기</button>
             </td>
           </tr>
@@ -760,6 +809,7 @@
           'connect': '연결',
           'disconnect': '연결 해제',
           'auth_success': '인증 성공',
+          'auth_fail': '인증 실패',
           'auth_failed': '인증 실패'
         };
 
@@ -774,10 +824,10 @@
                 l.event_type === 'auth_success' ? 'bg-blue-100 text-blue-700' :
                 'bg-red-100 text-red-700'
               }">
-                ${eventLabels[l.event_type] || l.event_type}
+                ${escapeHtml(eventLabels[l.event_type] || l.event_type)}
               </span>
             </td>
-            <td class="px-4 py-3 font-mono text-sm">${l.client_ip || '-'}</td>
+            <td class="px-4 py-3 font-mono text-sm">${escapeHtml(l.client_ip || '-')}</td>
           </tr>
         `).join('');
       } catch (err) {
@@ -842,36 +892,64 @@
       if (password) body.password = password;
 
       try {
-        await api(`/api/users/${id}`, {
+        const res = await api(`/api/users/${encodeURIComponent(id)}`, {
           method: 'PUT',
           body: JSON.stringify(body)
         });
+        if (res.error) throw new Error(res.error);
         hideEditUserModal();
-        loadUsers();
+        refreshAfterAccessChange();
+        if (!isActive) {
+          alert(`계정을 비활성화했습니다. 세션 토큰을 무효화하고 연결 ${res.closedConnections || 0}개를 끊었습니다.`);
+        }
       } catch (err) {
         alert('사용자 수정 실패');
       }
     };
 
+    // Anything that closes connections changes all three views.
+    function refreshAfterAccessChange() {
+      loadUsers();
+      loadSessions();
+      loadStats();
+    }
+
     async function deleteUser(id, username) {
-      if (!confirm(`정말 "${username}" 사용자를 삭제하시겠습니까?`)) return;
+      if (!confirm(`정말 "${username}" 사용자를 삭제하시겠습니까?\n현재 연결도 즉시 끊깁니다.`)) return;
 
       try {
-        await api(`/api/users/${id}`, { method: 'DELETE' });
-        loadUsers();
-        loadStats();
+        const res = await api(`/api/users/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        if (res.error) throw new Error(res.error);
+        refreshAfterAccessChange();
       } catch (err) {
         alert('사용자 삭제 실패');
       }
     }
 
-    async function terminateSession(id) {
-      if (!confirm('이 세션을 종료하시겠습니까?')) return;
+    async function revokeUser(id, username) {
+      if (!confirm(`"${username}" 사용자를 모든 기기에서 로그아웃시키겠습니까?\n` +
+                   '세션 토큰이 모두 무효화되고 현재 연결이 끊깁니다. 계정은 활성 상태로 남으며, ' +
+                   'SSO 사용자는 다시 SSO 로그인을 하면 접속할 수 있습니다.')) return;
 
       try {
-        await api(`/api/sessions/${id}`, { method: 'DELETE' });
-        loadSessions();
-        loadStats();
+        const res = await api(`/api/users/${encodeURIComponent(id)}/revoke`, { method: 'POST' });
+        if (res.error) throw new Error(res.error);
+        refreshAfterAccessChange();
+        alert(`로그아웃시켰습니다. 연결 ${res.closedConnections || 0}개를 끊었습니다.`);
+      } catch (err) {
+        alert('로그아웃 처리 실패');
+      }
+    }
+
+    async function terminateSession(id, username) {
+      if (!confirm(`"${username}" 사용자의 연결을 끊으시겠습니까?\n` +
+                   '이 사용자의 세션 토큰이 무효화되고, 다른 기기의 연결도 함께 끊깁니다. ' +
+                   'SSO 사용자는 다시 SSO 로그인을 해야 합니다.')) return;
+
+      try {
+        const res = await api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        if (res.error) throw new Error(res.error);
+        refreshAfterAccessChange();
       } catch (err) {
         alert('세션 종료 실패');
       }
